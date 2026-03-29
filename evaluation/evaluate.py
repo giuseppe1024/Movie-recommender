@@ -1,1 +1,1 @@
-# Evaluate recommendation quality using XXXXX
+# Evaluate recommendation quality using temporal leave-k-out split.
