@@ -1,1 +1,1 @@
-# Nearest neighbour retrieval using XXXXX to generate recommendations
+# Nearest neighbour retrieval using cosine similarity, k-nearest neighbor search to generate recommendations
