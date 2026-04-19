@@ -1,0 +1,10 @@
+{
+  "users_total": 610,
+  "users_evaluated": 541,
+  "leave_k": 5,
+  "top_k": 10,
+  "precision_at_k": 0.023290203327171903,
+  "recall_at_k": 0.06980899568699939,
+  "hit_rate_at_k": 0.18853974121996303,
+  "ndcg_at_k": 0.04948832052893158
+}
