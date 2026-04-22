@@ -23,6 +23,7 @@ STATS_PATH      = PROJECT_ROOT / "data" / "processed" / "movie_stats.csv"
 OMDB_CACHE_PATH   = PROJECT_ROOT / "data" / "omdb_cache.json"
 EVAL_RESULTS_PATH = PROJECT_ROOT / "data" / "eval_results.json"
 LINKS_PATH        = PROJECT_ROOT / "data" / "links.csv"
+POSTER_MAPPING_PATH = PROJECT_ROOT / "data" / "processed" / "poster_mapping.csv"
 
 RATING_OPTIONS = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
 PAGE_SIZE = 20
@@ -339,6 +340,13 @@ def load_catalog() -> pd.DataFrame:
     else:
         df["mean_rating"] = np.nan
         df["count"] = np.nan
+    
+    # Merge poster mapping if available
+    if POSTER_MAPPING_PATH.exists():
+        posters = pd.read_csv(POSTER_MAPPING_PATH)[["movieId", "poster_url"]].drop_duplicates("movieId")
+        df = df.merge(posters, on="movieId", how="left")
+    else:
+        df["poster_url"] = ""
 
     return df.reset_index(drop=True)
 
@@ -525,6 +533,7 @@ def page_browse():
             avg_r = mv.get("mean_rating")
             cnt   = mv.get("count")
 
+            
             tmdb_id = mv.get("tmdbId")
             omdb = fetch_movie_meta(dtitle, year, tmdb_id)
 
@@ -537,7 +546,12 @@ def page_browse():
             cur_r   = st.session_state.ratings[mid]["rating"] if already else None
 
             with col:
-                poster_url = (omdb or {}).get("poster", "")
+                local_poster_url = mv.get("poster_url", "")
+                poster_url = (
+                    local_poster_url
+                    if pd.notna(local_poster_url) and str(local_poster_url).strip()
+                    else (omdb or {}).get("poster", "")
+                )
                 if poster_url and poster_url not in ("", "N/A"):
                     st.image(poster_url, use_container_width=True)
                 else:
@@ -715,7 +729,18 @@ def page_my_ratings():
 
         tmdb_id = item.get("tmdbId")
         omdb = fetch_movie_meta(dtitle, year, tmdb_id)
-        poster_url = (omdb or {}).get("poster","")
+        catalog_row = catalog[catalog["movieId"] == mid]
+        local_poster_url = (
+            catalog_row["poster_url"].iloc[0]
+            if not catalog_row.empty and "poster_url" in catalog_row.columns
+            else ""
+        )
+        
+        poster_url = (
+            local_poster_url
+            if pd.notna(local_poster_url) and str(local_poster_url).strip()
+            else (omdb or {}).get("poster", "")
+        )
 
         col_img, col_info, col_r, col_act = st.columns([1, 5, 2, 1])
 
@@ -874,8 +899,18 @@ def page_for_you():
         pct    = max(0.0, min(100.0, score * 100))
         catalog_row = catalog[catalog["movieId"] == mid]
         tmdb_id = catalog_row["tmdbId"].iloc[0] if not catalog_row.empty else None
-        omdb    = fetch_movie_meta(dtitle, None, tmdb_id)
-        poster_url = (omdb or {}).get("poster", "")
+        omdb = fetch_movie_meta(dtitle, None, tmdb_id)
+        
+        local_poster_url = (
+            catalog_row["poster_url"].iloc[0]
+            if not catalog_row.empty and "poster_url" in catalog_row.columns
+            else ""
+        )
+        poster_url = (
+            local_poster_url
+            if pd.notna(local_poster_url) and str(local_poster_url).strip()
+            else (omdb or {}).get("poster", "")
+        )
 
         col_img, col_info, col_score = st.columns([1, 5, 2])
 
