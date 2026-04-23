@@ -1,4 +1,4 @@
-# Nearest neighbour retrieval using cosine similarity, k-nearest neighbor search to generate recommendationsimport numpy as np
+# Nearest-neighbour retrieval using cosine similarity to generate recommendations.
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import normalize
