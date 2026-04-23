@@ -81,11 +81,18 @@ def _ndcg_at_k(recommended_ids: list[int], relevant_ids: set[int], k: int) -> fl
 	return dcg / idcg if idcg > 0 else 0.0
 
 
+def _mrr_at_k(recommended_ids: list[int], relevant_ids: set[int], k: int) -> float:
+	for rank, movie_id in enumerate(recommended_ids[:k], start=1):
+		if movie_id in relevant_ids:
+			return 1.0 / rank
+	return 0.0
+
+
 def evaluate_temporal_leave_k_out(
 	ratings_path: str | Path | None = None,
 	embeddings_path: str | Path | None = None,
 	leave_k: int = 5,
-	top_k: int = 10,
+	top_k: int = 50,
 	relevance_threshold: float = 4.0,
 	min_train_ratings: int = 5,
 	weighted: bool = True,
@@ -129,6 +136,7 @@ def evaluate_temporal_leave_k_out(
 
 	per_user_rows = []
 	num_users_total = 0
+	recommended_catalog_ids = set()
 
 	for user_id, user_hist in ratings.groupby("userId", sort=False):
 		num_users_total += 1
@@ -163,11 +171,13 @@ def evaluate_temporal_leave_k_out(
 
 		rec_ids = recs["movieId"].tolist()
 		hits = len(set(rec_ids).intersection(relevant_test))
+		recommended_catalog_ids.update(rec_ids)
 
 		precision = hits / top_k if top_k > 0 else 0.0
 		recall = hits / len(relevant_test) if relevant_test else 0.0
 		hit_rate = 1.0 if hits > 0 else 0.0
 		ndcg = _ndcg_at_k(rec_ids, relevant_test, top_k)
+		mrr = _mrr_at_k(rec_ids, relevant_test, top_k)
 
 		per_user_rows.append(
 			{
@@ -180,6 +190,7 @@ def evaluate_temporal_leave_k_out(
 				"recall_at_k": float(recall),
 				"hit_rate_at_k": float(hit_rate),
 				"ndcg_at_k": float(ndcg),
+				"mrr_at_k": float(mrr),
 			}
 		)
 
@@ -194,8 +205,13 @@ def evaluate_temporal_leave_k_out(
 			"recall_at_k": 0.0,
 			"hit_rate_at_k": 0.0,
 			"ndcg_at_k": 0.0,
+			"mrr_at_k": 0.0,
+			"coverage_at_k": 0.0,
+			"coverage_pct_at_k": 0.0,
 		}
 		return summary, per_user
+
+	coverage = len(recommended_catalog_ids) / len(movie_ids) if len(movie_ids) > 0 else 0.0
 
 	summary = {
 		"users_total": int(num_users_total),
@@ -206,6 +222,9 @@ def evaluate_temporal_leave_k_out(
 		"recall_at_k": float(per_user["recall_at_k"].mean()),
 		"hit_rate_at_k": float(per_user["hit_rate_at_k"].mean()),
 		"ndcg_at_k": float(per_user["ndcg_at_k"].mean()),
+		"mrr_at_k": float(per_user["mrr_at_k"].mean()),
+		"coverage_at_k": float(coverage),
+		"coverage_pct_at_k": float(coverage * 100.0),
 	}
 	return summary, per_user
 
@@ -217,7 +236,7 @@ def main() -> None:
 	parser.add_argument("--ratings-path", type=str, default=None)
 	parser.add_argument("--embeddings-path", type=str, default=None)
 	parser.add_argument("--leave-k", type=int, default=5)
-	parser.add_argument("--top-k", type=int, default=10)
+	parser.add_argument("--top-k", type=int, default=50)
 	parser.add_argument("--relevance-threshold", type=float, default=4.0)
 	parser.add_argument("--min-train-ratings", type=int, default=5)
 	parser.add_argument("--unweighted", action="store_true")
