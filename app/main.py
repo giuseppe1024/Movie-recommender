@@ -104,20 +104,36 @@ st.markdown("""
 .stApp { background: #0a0a0a; }
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; color: #e8e8e8; }
 
-[data-testid="stSidebar"] { background: #0d0d0d !important; border-right: 1px solid #1c1c1c; }
+/* ── Sidebar: wider, deeper shadow, clearly distinct from main content ── */
+section[data-testid="stSidebar"] { min-width: 290px !important; max-width: 340px !important; }
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #111111 0%, #0d0d0d 100%) !important;
+    border-right: 2px solid #252525 !important;
+    box-shadow: 6px 0 30px rgba(0,0,0,0.6) !important;
+}
 [data-testid="stSidebar"] * { color: #d8d8d8 !important; }
 
-/* Nav links styling */
+/* ── Nav links: larger, clearly interactive, with hover/active states ── */
 [data-testid="stSidebarNavLink"] {
     border-radius: 8px !important;
-    margin: 2px 0 !important;
-    font-weight: 500 !important;
-    font-size: 0.9rem !important;
+    margin: 3px 6px !important;
+    padding: 11px 16px !important;
+    font-weight: 600 !important;
+    font-size: 1.0rem !important;
+    letter-spacing: 0.2px !important;
+    transition: all 0.18s ease !important;
+    border-left: 3px solid transparent !important;
+}
+[data-testid="stSidebarNavLink"]:hover {
+    background: rgba(229,9,20,0.1) !important;
+    border-left: 3px solid rgba(229,9,20,0.45) !important;
+    padding-left: 20px !important;
 }
 [data-testid="stSidebarNavLink"][aria-selected="true"] {
-    background: rgba(229,9,20,0.15) !important;
-    border-left: 3px solid #e50914 !important;
+    background: rgba(229,9,20,0.18) !important;
+    border-left: 4px solid #e50914 !important;
     color: #fff !important;
+    padding-left: 20px !important;
 }
 
 h1, h2, h3 { font-family: 'Cinzel', serif !important; letter-spacing: 1px; }
@@ -162,6 +178,23 @@ hr { border-color: #181818 !important; margin: 8px 0 !important; }
 ::-webkit-scrollbar-track { background: #0a0a0a; }
 ::-webkit-scrollbar-thumb { background: #282828; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #e50914; }
+
+/* ── Compact sidebar filter controls (browse page) ── */
+[data-testid="stSidebar"] .stSlider,
+[data-testid="stSidebar"] .stMultiSelect,
+[data-testid="stSidebar"] .stSelectbox,
+[data-testid="stSidebar"] .stTextInput { margin-bottom: 2px !important; }
+[data-testid="stSidebar"] .stSlider label,
+[data-testid="stSidebar"] .stMultiSelect label,
+[data-testid="stSidebar"] .stSelectbox label,
+[data-testid="stSidebar"] .stTextInput label {
+    font-size: 0.72rem !important;
+    color: #666 !important;
+    margin-bottom: 0 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.4px !important;
+}
+[data-testid="stSidebar"] [data-testid="stSlider"] { padding-bottom: 4px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -207,6 +240,19 @@ def small_poster_html(mid: int) -> str:
         f'background:linear-gradient(160deg,{c1},{c2});display:flex;align-items:center;'
         f'justify-content:center;font-size:1.8rem;box-shadow:0 4px 14px rgba(0,0,0,0.7)">🎬</div>'
     )
+
+def poster_card_html(poster_url: str, mid: int, display_title: str, year) -> str:
+    """Poster with fixed 2:3 aspect ratio so real images and placeholders stay aligned."""
+    if poster_url and str(poster_url).strip() not in ("", "N/A"):
+        safe_url = str(poster_url).replace('"', '%22')
+        return (
+            f'<div style="width:100%;padding-bottom:150%;position:relative;'
+            f'border-radius:10px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,0.8)">'
+            f'<img src="{safe_url}" style="position:absolute;top:0;left:0;'
+            f'width:100%;height:100%;object-fit:cover;" loading="lazy" />'
+            f'</div>'
+        )
+    return poster_placeholder(mid, display_title, year)
 
 
 # ── OMDB integration ──────────────────────────────────────────────────────────
@@ -409,6 +455,99 @@ has_stats  = not catalog["mean_rating"].isna().all()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: HOME (Landing)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_home():
+    # Hero
+    st.markdown(
+        '<div style="text-align:center;padding:56px 0 36px">'
+        '<div style="font-size:4.5rem;line-height:1;margin-bottom:14px">🎬</div>'
+        '<div style="font-family:Cinzel,serif;font-size:3.2rem;font-weight:900;'
+        'color:#f0f0f0;letter-spacing:8px;line-height:1">CINE'
+        '<span style="color:#e50914">MATCH</span></div>'
+        '<div style="font-family:Cinzel,serif;color:#f5c518;letter-spacing:10px;'
+        'font-size:0.72rem;margin:10px 0 28px;text-transform:uppercase">Film Discovery Engine</div>'
+        '<div style="max-width:580px;margin:0 auto">'
+        '<p style="color:#666;font-size:1.05rem;line-height:1.85;margin:0">'
+        'Your AI-powered cinema companion. Rate films you\'ve seen and CineMatch '
+        'learns your taste to surface hidden gems you\'ll love — no sign-up required.'
+        '</p></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Feature cards
+    _features = [
+        ("🎬", "Browse", "Explore 9,000+ films. Filter by genre, decade, year, and rating.", "#e50914"),
+        ("⭐", "Rate",   "Rate movies you've watched to build your personal taste profile.",  "#f5c518"),
+        ("🎯", "For You","Get AI-curated picks based on your ratings — powered by embeddings.", "#1a6eb5"),
+        ("📊", "Evaluate","See precision, recall, NDCG and more from our rigorous evaluation.", "#1a7a40"),
+    ]
+    cols = st.columns(4, gap="medium")
+    for col, (icon, title, desc, color) in zip(cols, _features):
+        with col:
+            st.markdown(
+                f'<div style="background:#111;border:1px solid #1e1e1e;border-top:3px solid {color};'
+                f'border-radius:12px;padding:26px 18px;text-align:center;min-height:185px">'
+                f'<div style="font-size:2rem;margin-bottom:12px">{icon}</div>'
+                f'<div style="font-family:Cinzel,serif;color:#f0f0f0;font-size:0.88rem;'
+                f'font-weight:700;letter-spacing:2px;margin-bottom:10px">{title}</div>'
+                f'<p style="color:#555;font-size:0.78rem;line-height:1.55;margin:0">{desc}</p>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # How it works strip
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(film_strip("HOW IT WORKS"), unsafe_allow_html=True)
+
+    _steps = [
+        ("01", "Browse & Rate",        "Open Browse. Find films you've seen and rate them 1–5 stars."),
+        ("02", "Build Your Profile",   "Rate 5+ films at 4 ★ or higher — CineMatch learns what you love."),
+        ("03", "Get Recommendations",  "Head to For You and hit Get My Recommendations for your AI-curated list."),
+        ("04", "Explore the Science",  "Curious how accurate it is? Check Evaluation for precision, recall & more."),
+    ]
+    cols2 = st.columns(4, gap="medium")
+    for col, (num, title, desc) in zip(cols2, _steps):
+        with col:
+            st.markdown(
+                f'<div style="background:#0f0f0f;border:1px solid #181818;border-radius:10px;'
+                f'padding:22px 16px;min-height:155px">'
+                f'<div style="font-family:Cinzel,serif;font-size:2.2rem;font-weight:900;'
+                f'color:#e50914;margin-bottom:10px;line-height:1">{num}</div>'
+                f'<div style="font-weight:600;color:#f0f0f0;font-size:0.88rem;margin-bottom:8px">{title}</div>'
+                f'<p style="color:#4a4a4a;font-size:0.77rem;line-height:1.55;margin:0">{desc}</p>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # Navigation hint
+    st.markdown(
+        '<div style="text-align:center;padding:40px 0 24px">'
+        '<div style="background:#111;border:1px solid #1e1e1e;border-radius:14px;'
+        'padding:28px 32px;max-width:520px;margin:0 auto">'
+        '<div style="font-family:Cinzel,serif;color:#f5c518;letter-spacing:4px;'
+        'font-size:0.7rem;margin-bottom:14px;text-transform:uppercase">Getting Started</div>'
+        '<p style="color:#777;font-size:0.88rem;line-height:1.8;margin:0">'
+        'Use the <b style="color:#f0f0f0">sidebar on the left ←</b> to switch between sections.<br>'
+        'New here? Start with <b style="color:#e50914">Browse</b> to find and rate your first films.'
+        '</p></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Catalog stats footer
+    st.markdown(
+        f'<div style="text-align:center;padding:8px 0 40px">'
+        f'<span style="color:#252525;font-size:0.78rem">'
+        f'{len(catalog):,} films in catalog &nbsp;·&nbsp; '
+        f'Semantic embeddings via sentence-transformers &nbsp;·&nbsp; '
+        f'Contrastive fine-tuning on real user ratings'
+        f'</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # PAGE: BROWSE
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -552,11 +691,8 @@ def page_browse():
                     if pd.notna(local_poster_url) and str(local_poster_url).strip()
                     else (omdb or {}).get("poster", "")
                 )
-                if poster_url and poster_url not in ("", "N/A"):
-                    st.image(poster_url, use_container_width=True)
-                else:
-                    st.markdown(poster_placeholder(mid, dtitle, year),
-                                unsafe_allow_html=True)
+                st.markdown(poster_card_html(poster_url, mid, dtitle, year),
+                            unsafe_allow_html=True)
 
                 # Title
                 st.markdown(
@@ -1026,47 +1162,6 @@ def page_evaluation():
         unsafe_allow_html=True,
     )
 
-    # ── Metric explanations ────────────────────────────────────────────────────
-    METRICS = [
-        {
-            "key":   "precision_at_k",
-            "label": "Precision@10",
-            "icon":  "🎯",
-            "color": "#e50914",
-            "what":  "Of the 10 movies recommended, how many did the user actually like?",
-            "good":  "Higher = fewer irrelevant recommendations in the top 10.",
-            "range": "0 → 1. A score of 0.10 means 1 in 10 recommended movies is relevant.",
-        },
-        {
-            "key":   "recall_at_k",
-            "label": "Recall@10",
-            "icon":  "📡",
-            "color": "#1a6eb5",
-            "what":  "Of all the movies the user would enjoy, how many made it into the top 10?",
-            "good":  "Higher = the model misses fewer movies the user would have loved.",
-            "range": "0 → 1. Hard to max out — a user may love 50 films but only 10 are shown.",
-        },
-        {
-            "key":   "ndcg_at_k",
-            "label": "NDCG@10",
-            "icon":  "📈",
-            "color": "#c9a227",
-            "what":  "Are relevant movies near the top of the list? NDCG rewards ranking quality — "
-                     "a liked movie at position 1 scores more than the same movie at position 9.",
-            "good":  "Higher = relevant movies ranked first, not buried at the bottom.",
-            "range": "0 → 1. Normalised against the ideal ranking for that user.",
-        },
-        {
-            "key":   "hit_rate_at_k",
-            "label": "Hit Rate@10",
-            "icon":  "✅",
-            "color": "#1a7a40",
-            "what":  "What fraction of users received at least one relevant movie in their top 10?",
-            "good":  "Higher = more users get at least one good recommendation (nobody is left out).",
-            "range": "0 → 1. The most lenient metric — even one hit counts as a success.",
-        },
-    ]
-
     if EVAL_RESULTS_PATH.exists():
         try:
             ev = json.loads(EVAL_RESULTS_PATH.read_text())
@@ -1081,11 +1176,83 @@ def page_evaluation():
             "(requires processed data and embeddings to exist)."
         )
 
+    # ── Metric explanations ────────────────────────────────────────────────────
+    k = ev.get("top_k", 10)
+    METRICS = [
+        {
+            "key":   "precision_at_k",
+            "label": f"Precision@{k}",
+            "icon":  "🎯",
+            "color": "#e50914",
+            "what":  f"Of the {k} movies recommended, how many did the user actually like?",
+            "good":  f"Higher = fewer irrelevant recommendations in the top {k}.",
+            "range": f"0 → 1. A score of {1/k:.2f} means 1 in {k} recommended movies is relevant.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "recall_at_k",
+            "label": f"Recall@{k}",
+            "icon":  "📡",
+            "color": "#1a6eb5",
+            "what":  f"Of all the movies the user would enjoy, how many made it into the top {k}?",
+            "good":  "Higher = the model misses fewer movies the user would have loved.",
+            "range": f"0 → 1. Hard to max out — a user may love 50 films but only {k} are shown.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "ndcg_at_k",
+            "label": f"NDCG@{k}",
+            "icon":  "📈",
+            "color": "#c9a227",
+            "what":  f"Are relevant movies near the top of the list? NDCG rewards ranking quality — "
+                     f"a liked movie at position 1 scores more than the same movie at position {k}.",
+            "good":  "Higher = relevant movies ranked first, not buried at the bottom.",
+            "range": "0 → 1. Normalised against the ideal ranking for that user.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "hit_rate_at_k",
+            "label": f"Hit Rate@{k}",
+            "icon":  "✅",
+            "color": "#1a7a40",
+            "what":  f"What fraction of users received at least one relevant movie in their top {k}?",
+            "good":  "Higher = more users get at least one good recommendation (nobody is left out).",
+            "range": "0 → 1. The most lenient metric — even one hit counts as a success.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "mrr_at_k",
+            "label": f"MRR@{k}",
+            "icon":  "🏆",
+            "color": "#7b2fbe",
+            "what":  "Mean Reciprocal Rank — for each user, 1 ÷ rank of their first relevant recommendation.",
+            "good":  "Higher = the first relevant pick appears closer to position #1.",
+            "range": "0 → 1. MRR of 1.0 means the top recommendation is always relevant.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "coverage_pct_at_k",
+            "label": "Catalog Coverage",
+            "icon":  "🗺️",
+            "color": "#0a7a70",
+            "what":  "Percentage of the full movie catalog that gets recommended to at least one user.",
+            "good":  "Higher = more diverse recommendations; low coverage suggests popularity bias.",
+            "range": "0 → 100%. A high score means the model explores beyond the same blockbusters.",
+            "fmt":   "pct",
+        },
+    ]
+
     # ── Metric cards ──────────────────────────────────────────────────────────
     for m in METRICS:
-        val   = ev.get(m["key"], None)
-        bar_w = int(val * 100) if val is not None else 0
-        val_s = f"{val:.4f}" if val is not None else "—"
+        val = ev.get(m["key"], None)
+        if val is None:
+            continue
+        if m["fmt"] == "pct":
+            bar_w = min(100, max(0, int(val)))
+            val_s = f"{val:.2f}%"
+        else:
+            bar_w = min(100, max(0, int(val * 100)))
+            val_s = f"{val:.4f}"
 
         st.markdown(
             f'<div style="background:#111;border:1px solid #1e1e1e;border-radius:10px;'
@@ -1109,6 +1276,12 @@ def page_evaluation():
             f'<p style="color:#555;font-size:0.75rem;margin:0"><i>Range: {m["range"]}</i></p>'
             f'</div>',
             unsafe_allow_html=True,
+        )
+
+    if ev and not any(ev.get(k2) for k2 in ("mrr_at_k", "coverage_pct_at_k")):
+        st.info(
+            "MRR and Catalog Coverage metrics require a fresh evaluation run. "
+            "Click **Re-run Evaluation** in the sidebar to compute them."
         )
 
     # ── Summary stats ─────────────────────────────────────────────────────────
@@ -1168,8 +1341,9 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 pg = st.navigation([
-    st.Page(page_browse,     title="Browse",                   icon="🎬"),
-    st.Page(page_my_ratings, title=f"My Ratings ({n_rated})",  icon="⭐"),
+    st.Page(page_home,       title="Home",                      icon="🏠"),
+    st.Page(page_browse,     title="Browse",                    icon="🎬"),
+    st.Page(page_my_ratings, title=f"My Ratings ({n_rated})",   icon="⭐"),
     st.Page(page_for_you,    title="For You",                   icon="🎯"),
     st.Page(page_evaluation, title="Evaluation",                icon="📊"),
 ])
