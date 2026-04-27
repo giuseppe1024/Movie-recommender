@@ -410,7 +410,8 @@ def load_embeddings():
         return None
     return load_embedding_table(str(EMBEDDINGS_PATH))
 
-def get_recommendations(top_k: int, min_rating: float) -> pd.DataFrame | None:
+def get_recommendations(top_k: int, rating_midpoint: float = 3.0) -> pd.DataFrame | None:
+    """Return personalised recommendations with normalized display scores and similar_to info."""
     result = load_embeddings()
     if result is None:
         return None
@@ -421,19 +422,87 @@ def get_recommendations(top_k: int, min_rating: float) -> pd.DataFrame | None:
     ])
     try:
         query_vec, _ = build_user_query_vector(
-            user_ratings=user_df, emb_matrix=emb_matrix,
-            movieid_to_idx=movieid_to_idx, min_rating=min_rating, weighted=True,
+            user_ratings=user_df,
+            emb_matrix=emb_matrix,
+            movieid_to_idx=movieid_to_idx,
+            weighted=True,
+            rating_midpoint=rating_midpoint,
         )
     except ValueError:
         return None
+
     sims = emb_matrix @ query_vec
     rated_mask = np.array([mid in st.session_state.ratings for mid in movie_ids])
     sims[rated_mask] = -np.inf
     top_idx = np.argsort(-sims)[:top_k]
+
+    raw_scores = sims[top_idx]
+
+    # Normalize scores to [0, 1] within the returned list so the top pick always
+    # reads as ~100%.  Cosine similarity in high-dimensional space is naturally low
+    # (~0.2-0.4 for strong matches) — raw values would look misleadingly small.
+    s_min, s_max = float(raw_scores.min()), float(raw_scores.max())
+    if s_max > s_min:
+        display_scores = (raw_scores - s_min) / (s_max - s_min)
+    else:
+        display_scores = np.ones_like(raw_scores)
+
+    # "Because you liked X" — find each rec's most similar above-midpoint movie
+    liked_ids = [
+        mid for mid, info in st.session_state.ratings.items()
+        if mid in movieid_to_idx and info["rating"] >= rating_midpoint
+    ]
+    if liked_ids:
+        liked_vecs = emb_matrix[[movieid_to_idx[m] for m in liked_ids]]
+        rec_vecs   = emb_matrix[top_idx]
+        cross_sims = rec_vecs @ liked_vecs.T           # (top_k, n_liked)
+        best_pos   = cross_sims.argmax(axis=1)
+        similar_to = [
+            st.session_state.ratings[liked_ids[i]].get("display_title", "") or ""
+            for i in best_pos
+        ]
+    else:
+        similar_to = [""] * len(top_idx)
+
     return pd.DataFrame({
-        "movieId": movie_ids[top_idx],
-        "title":   titles[top_idx],
-        "score":   sims[top_idx],
+        "movieId":    movie_ids[top_idx],
+        "title":      titles[top_idx],
+        "score":      display_scores,
+        "similar_to": similar_to,
+    }).reset_index(drop=True)
+
+
+def get_popular_recommendations(top_k: int) -> pd.DataFrame | None:
+    """
+    Cold-start fallback: return top-k movies ranked by a popularity score
+    defined as mean_rating × log(1 + count).  Only movies present in the
+    embedding table are eligible.
+    """
+    result = load_embeddings()
+    if result is None:
+        return None
+    _, _, _, movie_ids_arr, titles_arr = result
+    emb_ids = set(movie_ids_arr.tolist())
+
+    pop = catalog[catalog["movieId"].isin(emb_ids)].copy()
+    pop = pop.dropna(subset=["mean_rating", "count"])
+    if pop.empty:
+        return None
+
+    already_rated = set(st.session_state.ratings.keys())
+    pop = pop[~pop["movieId"].isin(already_rated)]
+    if pop.empty:
+        return None
+
+    pop = pop.copy()
+    pop["pop_score"] = pop["mean_rating"] * np.log1p(pop["count"])
+    pop = pop.nlargest(top_k, "pop_score")
+    max_score = pop["pop_score"].max()
+
+    return pd.DataFrame({
+        "movieId": pop["movieId"].values,
+        "title":   pop["title"].values,
+        "score":   pop["pop_score"].values / max_score if max_score > 0 else pop["pop_score"].values,
     }).reset_index(drop=True)
 
 
@@ -478,52 +547,69 @@ def run_sensitivity_analysis(
     base_min_rel: int,
     base_threshold: float,
     base_max_windows: int,
+    base_rating_midpoint: float,
 ) -> pd.DataFrame:
     """Run evaluation across a range of one parameter, holding others fixed.
 
-    For leave_k sweeps, min_train_ratings and min_relevant_test both scale with K so
-    that the user-count curve is driven purely by the history requirement, not by the
-    easier-to-satisfy relevance filter at larger K.
+    Embeddings and ratings are loaded once before the sweep loop so repeated
+    file I/O doesn't dominate runtime.  Step sizes are coarser than the full
+    evaluation so the sweep completes in reasonable time.
     """
     _param_ranges: dict[str, list] = {
-        "top_k":               list(range(5, 51)),           # 5–50, step 1
-        "leave_k":             list(range(1, 21)),           # 1–20, step 1
-        "min_relevant_test":   list(range(1, min(base_leave_k + 1, 11))),  # step 1
-        "relevance_threshold": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+        "top_k":               list(range(5, 51, 5)),        # 10 points: 5, 10, …, 50
+        "leave_k":             list(range(1, 21, 2)),         # 10 points: 1, 3, …, 19
+        "relevance_threshold": [2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+        "rating_midpoint":     [2.0, 2.5, 3.0, 3.5, 4.0],
     }
     vals = _param_ranges.get(vary_param, [])
-    rows = []
+    if not vals:
+        return pd.DataFrame()
+
     from evaluation.evaluate import evaluate_temporal_leave_k_out
-    for val in vals:
-        kwargs: dict = dict(
-            ratings_path=ratings_path_str,
-            embeddings_path=embeddings_path_str,
-            top_k=base_top_k,
-            leave_k=base_leave_k,
-            min_train_ratings=base_min_train,
-            min_relevant_test=base_min_rel,
-            relevance_threshold=base_threshold,
-            max_windows=base_max_windows,
+    from retrieval.recommend import load_embedding_table
+
+    # ── Load data once; pass pre-loaded to every sweep step ──────────────────
+    try:
+        _, emb_matrix, movieid_to_idx, movie_ids, titles = load_embedding_table(
+            embeddings_path_str
         )
+        ratings_df = pd.read_csv(ratings_path_str).sort_values(["userId", "timestamp"])
+    except Exception:
+        return pd.DataFrame()
+
+    rows = []
+    base_kwargs: dict = dict(
+        top_k=base_top_k,
+        leave_k=base_leave_k,
+        min_train_ratings=base_min_train,
+        min_relevant_test=base_min_rel,
+        relevance_threshold=base_threshold,
+        max_windows=base_max_windows,
+        rating_midpoint=base_rating_midpoint,
+        _preloaded_ratings=ratings_df,
+        _preloaded_emb_matrix=emb_matrix,
+        _preloaded_movieid_to_idx=movieid_to_idx,
+        _preloaded_movie_ids=movie_ids,
+        _preloaded_titles=titles,
+    )
+    for val in vals:
+        kwargs = dict(base_kwargs)
         kwargs[vary_param] = val
         if vary_param == "leave_k":
-            # Scale min_train and min_rel proportionally with K so the user-count
-            # curve reflects the stricter history requirement, not the easier
-            # min_relevant_test filter (which grows easier to satisfy as K increases).
             kwargs["min_train_ratings"] = max(10, int(val) + 10)
             prop_min_rel = max(1, round(base_min_rel / base_leave_k * int(val)))
             kwargs["min_relevant_test"] = min(prop_min_rel, int(val))
         try:
             s, _ = evaluate_temporal_leave_k_out(**kwargs)
             rows.append({
-                vary_param:                 val,
-                "Precision@K":              s.get("precision_at_k", 0),
-                "NDCG@K (Binary)":          s.get("ndcg_at_k", 0),
-                "Graded NDCG@K":            s.get("graded_ndcg_at_k", 0),
-                "Hit Rate@K":               s.get("hit_rate_at_k", 0),
-                "Pairwise Rank Acc":        s.get("pairwise_rank_acc_at_k", 0),
-                "Dislike Rate@K":           s.get("dislike_rate_at_k", 0),
-                "Users Evaluated":          s.get("users_evaluated", 0),
+                vary_param:          val,
+                "Precision@K":       s.get("precision_at_k", 0),
+                "NDCG@K (Binary)":   s.get("ndcg_at_k", 0),
+                "Graded NDCG@K":     s.get("graded_ndcg_at_k", 0),
+                "Hit Rate@K":        s.get("hit_rate_at_k", 0),
+                "Pairwise Rank Acc": s.get("pairwise_rank_acc_at_k", 0),
+                "Dislike Rate@K":    s.get("dislike_rate_at_k", 0),
+                "Users Evaluated":   s.get("users_evaluated", 0),
             })
         except Exception:
             pass
@@ -535,13 +621,14 @@ def run_sensitivity_analysis(
 # ── Session state init ────────────────────────────────────────────────────────
 
 _defaults = {
-    "ratings":          {},   # {movieId: {display_title, rating, genres, year, director, tmdbId}}
-    "recs":             None,
-    "browse_page":      0,
-    "last_filter_key":  None,
-    "tmdb_key":         "",
-    "omdb_key":         "",
-    "omdb_cache":       _load_omdb_cache(),
+    "ratings":             {},   # {movieId: {display_title, rating, genres, year, director, tmdbId}}
+    "recs":                None,
+    "recs_is_cold_start":  False,
+    "browse_page":         0,
+    "last_filter_key":     None,
+    "tmdb_key":            "",
+    "omdb_key":            "",
+    "omdb_cache":          _load_omdb_cache(),
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -581,12 +668,13 @@ def page_home():
 
     # Feature cards — the entire block is the clickable link
     _features = [
-        ("🎬", "Browse",   "Explore 9,000+ films. Filter by genre, decade, year, and rating.", "#e50914", "/browse"),
-        ("⭐", "Rate",     "Rate movies you've watched to build your personal taste profile.",  "#f5c518", "/my-ratings"),
-        ("🎯", "For You",  "Get AI-curated picks based on your ratings — powered by embeddings.", "#1a6eb5", "/for-you"),
-        ("📊", "Evaluate", "See precision, recall, NDCG and more from our rigorous evaluation.", "#1a7a40", "/evaluation"),
+        ("🎬", "Browse",     "Explore 9,000+ films. Filter by genre, decade, year, and rating.", "#e50914", "/browse"),
+        ("⭐", "Rate",       "Rate movies you've watched to build your personal taste profile.",  "#f5c518", "/my-ratings"),
+        ("🎯", "For You",    "Get AI-curated picks based on your ratings — powered by embeddings.", "#1a6eb5", "/for-you"),
+        ("📈", "My Profile", "Visualise your taste profile: rating distribution, genre chart, and embedding space PCA.", "#7b2fbe", "/profile"),
+        ("📊", "Evaluate",   "See precision, recall, NDCG and more from our rigorous evaluation.", "#1a7a40", "/evaluation"),
     ]
-    cols = st.columns(4, gap="medium")
+    cols = st.columns(5, gap="medium")
     for col, (icon, title, desc, color, url) in zip(cols, _features):
         with col:
             st.markdown(
@@ -1040,104 +1128,9 @@ def page_my_ratings():
         st.markdown("<hr style='margin:5px 0;border-color:#141414'>", unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# PAGE: FOR YOU
-# ═══════════════════════════════════════════════════════════════════════════════
+# ── Shared rec-list renderer (used by both normal + cold-start paths) ─────────
 
-def page_for_you():
-    # ── Sidebar prefs ─────────────────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("**Preferences**")
-        for_k = st.slider("# of recommendations", 5, 50, 10, 5)
-        for_min = st.select_slider(
-            "Min ★ to learn from",
-            options=[3.0, 3.5, 4.0, 4.5, 5.0], value=4.0,
-        )
-
-    # ── Render ────────────────────────────────────────────────────────────────
-    st.markdown(film_strip("CURATED FOR YOU"), unsafe_allow_html=True)
-    st.markdown(
-        '<h1 style="font-size:1.9rem;margin:0 0 4px;color:#f0f0f0">For You</h1>',
-        unsafe_allow_html=True,
-    )
-
-    if not EMBEDDINGS_PATH.exists():
-        st.warning("Embeddings not built. Run `embeddings/build_embeddings.py` first.")
-        return
-
-    if n_liked == 0:
-        st.markdown(
-            '<div style="text-align:center;padding:80px 0">'
-            '<div style="font-size:5rem">⭐</div>'
-            '<p style="color:#444;font-size:1.1rem;margin-top:20px">'
-            'Rate at least one movie <b>4★ or higher</b> to unlock recommendations.</p>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    # Taste profile pills
-    genre_counts: dict[str, int] = {}
-    for info in st.session_state.ratings.values():
-        if info["rating"] >= for_min:
-            for g in str(info.get("genres","")).replace("|",",").split(","):
-                g = g.strip()
-                if g:
-                    genre_counts[g] = genre_counts.get(g, 0) + 1
-
-    if genre_counts:
-        top_genres = sorted(genre_counts.items(), key=lambda x: -x[1])[:6]
-        pills = "".join(
-            f'<span style="background:#111;border:1px solid #e50914;color:#ddd;'
-            f'padding:4px 14px;border-radius:20px;font-size:0.78rem;margin:3px;'
-            f'display:inline-block">{g} <b style="color:#e50914">{c}</b></span>'
-            for g, c in top_genres
-        )
-        st.markdown(
-            '<p style="color:#444;font-size:0.82rem;margin-bottom:6px">'
-            'Taste profile — genres from your liked films:</p>'
-            f'<div style="margin-bottom:22px">{pills}</div>',
-            unsafe_allow_html=True,
-        )
-
-    # ── Model quality metrics (from evaluation/evaluate.py via run.py) ──────────
-    if EVAL_RESULTS_PATH.exists():
-        try:
-            ev = json.loads(EVAL_RESULTS_PATH.read_text())
-            with st.expander("📊 Model Quality Metrics", expanded=False):
-                st.markdown(
-                    '<p style="color:#666;font-size:0.78rem;margin-bottom:10px">'
-                    'Temporal leave-k-out evaluation — how well the model generalises '
-                    f'across {ev.get("users_evaluated", "?")} users.</p>',
-                    unsafe_allow_html=True,
-                )
-                mc1, mc2, mc3, mc4 = st.columns(4)
-                mc1.metric("Precision@K",      f'{ev.get("precision_at_k", 0):.3f}')
-                mc2.metric("Graded NDCG@K",    f'{ev.get("graded_ndcg_at_k", 0):.3f}')
-                mc3.metric("Hit Rate@K",       f'{ev.get("hit_rate_at_k", 0):.3f}')
-                mc4.metric("Pair Rank Acc",    f'{ev.get("pairwise_rank_acc_at_k", 0):.3f}')
-        except Exception:
-            pass
-
-    if st.button("🎯  Get My Recommendations", type="primary"):
-        with st.spinner("Analyzing your taste profile…"):
-            st.session_state.recs = get_recommendations(for_k, for_min)
-
-    recs = st.session_state.recs
-    if recs is None:
-        return
-
-    if recs.empty:
-        st.warning("No results — try rating more movies or lowering the taste threshold.")
-        return
-
-    st.markdown(
-        f'<p style="color:#444;font-size:0.85rem;margin:16px 0 20px">'
-        f'Top {len(recs)} picks based on your {n_liked} liked '
-        f'film{"s" if n_liked != 1 else ""}.</p>',
-        unsafe_allow_html=True,
-    )
-
+def _render_rec_list(recs: pd.DataFrame) -> None:
     for rank, (_, row) in enumerate(recs.iterrows(), 1):
         mid    = int(row["movieId"])
         raw_t  = str(row["title"])
@@ -1147,7 +1140,7 @@ def page_for_you():
         catalog_row = catalog[catalog["movieId"] == mid]
         tmdb_id = catalog_row["tmdbId"].iloc[0] if not catalog_row.empty else None
         omdb = fetch_movie_meta(dtitle, None, tmdb_id)
-        
+
         local_poster_url = (
             catalog_row["poster_url"].iloc[0]
             if not catalog_row.empty and "poster_url" in catalog_row.columns
@@ -1162,33 +1155,57 @@ def page_for_you():
         col_img, col_info, col_score = st.columns([1, 5, 2])
 
         with col_img:
-            if poster_url and poster_url not in ("","N/A"):
+            if poster_url and poster_url not in ("", "N/A"):
                 st.image(poster_url, width=70)
             else:
                 st.markdown(small_poster_html(mid), unsafe_allow_html=True)
 
         with col_info:
-            director = (omdb or {}).get("director","")
-            genre    = (omdb or {}).get("genre","")
-            plot     = (omdb or {}).get("plot","")
+            director   = (omdb or {}).get("director", "")
+            genre      = (omdb or {}).get("genre", "")
+            plot       = (omdb or {}).get("plot", "")
+            similar_to = str(row.get("similar_to", "")) if "similar_to" in row.index else ""
+
+            # Genre tags from catalog as a fallback when OMDB isn't configured
+            cat_row = catalog[catalog["movieId"] == mid]
+            cat_genres = ""
+            if not cat_row.empty:
+                raw_g = str(cat_row["genres"].iloc[0] or "")
+                cat_genres = raw_g.replace("|", " · ") if raw_g else ""
+
+            display_genre = genre or cat_genres
+
             st.markdown(
                 f'<div style="font-family:Cinzel,serif;font-size:0.68rem;color:#e50914;'
                 f'font-weight:700;letter-spacing:2px">#{rank}</div>'
                 f'<div style="font-weight:600;font-size:1rem;color:#f0f0f0">{dtitle}</div>',
                 unsafe_allow_html=True,
             )
+
             meta = []
-            if director and director not in ("","N/A"): meta.append(f"Dir. {director}")
-            if genre: meta.append(genre[:60])
+            if director and director not in ("", "N/A"):
+                meta.append(f"Dir. {director}")
+            if display_genre:
+                meta.append(display_genre[:70])
             if meta:
                 st.markdown(
                     f'<div style="color:#444;font-size:0.78rem;margin-top:2px">'
                     f'{" · ".join(meta)}</div>',
                     unsafe_allow_html=True,
                 )
-            if plot and plot not in ("","N/A"):
+
+            if similar_to:
                 st.markdown(
-                    f'<div style="color:#555;font-size:0.75rem;margin-top:4px;line-height:1.5">'
+                    f'<div style="margin-top:5px">'
+                    f'<span style="background:#1a0000;border:1px solid #500;color:#e57373;'
+                    f'padding:2px 10px;border-radius:12px;font-size:0.71rem">'
+                    f'Because you liked <i>{similar_to[:50]}</i></span></div>',
+                    unsafe_allow_html=True,
+                )
+
+            if plot and plot not in ("", "N/A"):
+                st.markdown(
+                    f'<div style="color:#555;font-size:0.75rem;margin-top:5px;line-height:1.55">'
                     f'{plot[:220]}…</div>',
                     unsafe_allow_html=True,
                 )
@@ -1215,15 +1232,156 @@ def page_for_you():
                 if st.button("Save", key=f"rec_sv_{mid}", type="primary"):
                     st.session_state.ratings[mid] = {
                         "display_title": dtitle,
-                        "rating":   float(chosen),
-                        "genres":   (omdb or {}).get("genre",""),
-                        "year":     None,
-                        "director": (omdb or {}).get("director",""),
+                        "rating":        float(chosen),
+                        "genres":        (omdb or {}).get("genre", ""),
+                        "year":          None,
+                        "director":      (omdb or {}).get("director", ""),
                     }
                     st.session_state.recs = None
                     st.rerun()
 
         st.markdown("<hr style='margin:10px 0;border-color:#141414'>", unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: FOR YOU
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_for_you():
+    # ── Sidebar prefs ─────────────────────────────────────────────────────────
+    with st.sidebar:
+        st.markdown("**Preferences**")
+        for_k = st.slider("# of recommendations", 5, 50, 10, 5)
+        rating_midpoint = st.select_slider(
+            "Rating neutral point",
+            options=[2.5, 3.0, 3.5], value=3.0,
+            help=(
+                "The boundary between 'attract' and 'repel'.\n\n"
+                "Movies rated above this pull recommendations toward similar films; "
+                "movies rated below push them away. "
+                "A 5★ film pulls harder than a 4★; a 1★ pushes harder than a 2★."
+            ),
+        )
+
+    # ── Render ────────────────────────────────────────────────────────────────
+    st.markdown(film_strip("CURATED FOR YOU"), unsafe_allow_html=True)
+    st.markdown(
+        '<h1 style="font-size:1.9rem;margin:0 0 4px;color:#f0f0f0">For You</h1>',
+        unsafe_allow_html=True,
+    )
+
+    if not EMBEDDINGS_PATH.exists():
+        st.warning("Embeddings not built. Run `embeddings/build_embeddings.py` first.")
+        return
+
+    # ── Cold start: no ratings yet ────────────────────────────────────────────
+    if n_rated == 0:
+        st.markdown(
+            '<div style="background:#111;border:1px solid #1e1e1e;border-left:4px solid #f5c518;'
+            'border-radius:8px;padding:18px 20px;margin-bottom:24px">'
+            '<p style="color:#ccc;font-size:0.9rem;margin:0">'
+            '<b style="color:#f5c518">New here?</b> Rate some movies in '
+            '<b>Browse</b> and we\'ll tailor these picks to your taste. '
+            'For now, here are the most celebrated films in the catalog.</p>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("🌟  Show Top Picks", type="primary"):
+            with st.spinner("Fetching top picks…"):
+                st.session_state.recs = get_popular_recommendations(for_k)
+                st.session_state.recs_is_cold_start = True
+
+        recs = st.session_state.recs
+        if recs is None or recs.empty:
+            return
+
+        st.markdown(
+            f'<p style="color:#444;font-size:0.85rem;margin:16px 0 20px">'
+            f'Top {len(recs)} picks by community rating — personalised recommendations '
+            f'unlock after you rate a few films.</p>',
+            unsafe_allow_html=True,
+        )
+
+        _render_rec_list(recs)
+        return
+
+    # ── Taste profile pills ───────────────────────────────────────────────────
+    liked_genres:   dict[str, int] = {}
+    disliked_genres: dict[str, int] = {}
+    for info in st.session_state.ratings.values():
+        bucket = liked_genres if info["rating"] >= rating_midpoint else disliked_genres
+        for g in str(info.get("genres", "")).replace("|", ",").split(","):
+            g = g.strip()
+            if g:
+                bucket[g] = bucket.get(g, 0) + 1
+
+    pill_parts = []
+    if liked_genres:
+        top_liked = sorted(liked_genres.items(), key=lambda x: -x[1])[:5]
+        pill_parts += [
+            f'<span style="background:#111;border:1px solid #e50914;color:#ddd;'
+            f'padding:4px 12px;border-radius:20px;font-size:0.76rem;margin:3px;'
+            f'display:inline-block">{g} <b style="color:#e50914">+{c}</b></span>'
+            for g, c in top_liked
+        ]
+    if disliked_genres:
+        top_disliked = sorted(disliked_genres.items(), key=lambda x: -x[1])[:3]
+        pill_parts += [
+            f'<span style="background:#111;border:1px solid #333;color:#666;'
+            f'padding:4px 12px;border-radius:20px;font-size:0.76rem;margin:3px;'
+            f'display:inline-block">{g} <b style="color:#555">−{c}</b></span>'
+            for g, c in top_disliked
+        ]
+    if pill_parts:
+        st.markdown(
+            '<p style="color:#444;font-size:0.8rem;margin-bottom:6px">'
+            'Taste profile — <span style="color:#e50914">attracting</span> / '
+            '<span style="color:#444">repelling</span>:</p>'
+            f'<div style="margin-bottom:20px">{"".join(pill_parts)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Model quality metrics ──────────────────────────────────────────────────
+    if EVAL_RESULTS_PATH.exists():
+        try:
+            ev = json.loads(EVAL_RESULTS_PATH.read_text())
+            with st.expander("📊 Model Quality Metrics", expanded=False):
+                st.markdown(
+                    '<p style="color:#666;font-size:0.78rem;margin-bottom:10px">'
+                    'Temporal leave-k-out evaluation — how well the model generalises '
+                    f'across {ev.get("users_evaluated", "?")} users.</p>',
+                    unsafe_allow_html=True,
+                )
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1.metric("Precision@K",   f'{ev.get("precision_at_k", 0):.3f}')
+                mc2.metric("Graded NDCG@K", f'{ev.get("graded_ndcg_at_k", 0):.3f}')
+                mc3.metric("Hit Rate@K",    f'{ev.get("hit_rate_at_k", 0):.3f}')
+                mc4.metric("Pair Rank Acc", f'{ev.get("pairwise_rank_acc_at_k", 0):.3f}')
+        except Exception:
+            pass
+
+    if st.button("🎯  Get My Recommendations", type="primary"):
+        with st.spinner("Analyzing your taste profile…"):
+            st.session_state.recs = get_recommendations(for_k, rating_midpoint)
+            st.session_state.recs_is_cold_start = False
+
+    recs = st.session_state.recs
+    if recs is None:
+        return
+
+    if recs.empty:
+        st.warning("No results — try rating more movies or adjusting the neutral point.")
+        return
+
+    st.markdown(
+        f'<p style="color:#444;font-size:0.85rem;margin:16px 0 20px">'
+        f'Top {len(recs)} picks from {n_rated} rated '
+        f'film{"s" if n_rated != 1 else ""} '
+        f'(neutral point: {rating_midpoint}★).</p>',
+        unsafe_allow_html=True,
+    )
+
+    _render_rec_list(recs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1273,6 +1431,13 @@ def page_evaluation():
             help="How many sliding K-movie windows to evaluate per user. "
                  "More windows = more signal per user but longer runtime.",
         )
+        eval_rating_midpoint = st.select_slider(
+            "Rating neutral point",
+            options=[2.0, 2.5, 3.0, 3.5, 4.0],
+            value=float(ev.get("rating_midpoint", 3.0)),
+            help="The boundary used when building the query vector during evaluation. "
+                 "Ratings above this attract; below repel. Should match your For You setting.",
+        )
         st.markdown("---")
         if st.button("Re-run Evaluation", use_container_width=True,
                      help="Re-runs the full temporal leave-k-out evaluation. May take a minute."):
@@ -1288,6 +1453,7 @@ def page_evaluation():
                         min_relevant_test=eval_min_rel,
                         relevance_threshold=eval_relevance_threshold,
                         max_windows=eval_max_windows,
+                        rating_midpoint=eval_rating_midpoint,
                     )
                     EVAL_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
                     EVAL_RESULTS_PATH.write_text(json.dumps(summary, indent=2))
@@ -1310,11 +1476,13 @@ def page_evaluation():
         or eval_leave_k != int(ev.get("leave_k", eval_leave_k))
         or eval_relevance_threshold != float(ev.get("relevance_threshold", eval_relevance_threshold))
         or eval_max_windows != int(ev.get("max_windows", eval_max_windows))
+        or eval_rating_midpoint != float(ev.get("rating_midpoint", eval_rating_midpoint))
     )
     if params_changed:
         st.warning(
             f"Showing cached results (N={ev.get('top_k')}, K={ev.get('leave_k')}, "
-            f"liked≥{ev.get('relevance_threshold', 3.5)}★). "
+            f"liked≥{ev.get('relevance_threshold', 3.5)}★, "
+            f"neutral={ev.get('rating_midpoint', 3.0)}★). "
             f"Hit **Re-run Evaluation** to apply your new settings."
         )
 
@@ -1548,6 +1716,8 @@ def page_evaluation():
     _param_labels = {
         "leave_k":             "K — movies held out",
         "relevance_threshold": "Liked threshold (rating ≥)",
+        "rating_midpoint":     "Rating neutral point (query temperature)",
+        "top_k":               "N — recommendations shown",
     }
     sa_col1, sa_col2 = st.columns([3, 1])
     with sa_col1:
@@ -1559,6 +1729,8 @@ def page_evaluation():
         )
     with sa_col2:
         run_sa = st.button("Run Analysis", use_container_width=True, key="run_sensitivity")
+
+    st.caption("Each sweep pre-loads data once and uses coarser steps for speed.")
 
     if run_sa:
         _rc = str(PROJECT_ROOT / "data" / "processed" / "ratings_clean.csv")
@@ -1578,13 +1750,17 @@ def page_evaluation():
                     base_min_rel=eval_min_rel,
                     base_threshold=eval_relevance_threshold,
                     base_max_windows=eval_max_windows,
+                    base_rating_midpoint=eval_rating_midpoint,
                 )
             if "sensitivity_results" not in st.session_state:
                 st.session_state.sensitivity_results = {}
             st.session_state.sensitivity_results[vary_param] = {
                 "df": _sens_df,
-                "params": dict(top_k=eval_top_k, leave_k=eval_leave_k,
-                               min_rel=eval_min_rel, threshold=eval_relevance_threshold),
+                "params": dict(
+                    top_k=eval_top_k, leave_k=eval_leave_k,
+                    min_rel=eval_min_rel, threshold=eval_relevance_threshold,
+                    midpoint=eval_rating_midpoint,
+                ),
             }
 
     _sr = st.session_state.get("sensitivity_results", {})
@@ -1593,8 +1769,8 @@ def page_evaluation():
         _df    = _entry["df"]
         _p     = _entry["params"]
         st.caption(
-            f"Baseline used — N={_p['top_k']}, K={_p['leave_k']}, "
-            f"min_liked={_p['min_rel']}, liked≥{_p['threshold']}★"
+            f"Baseline — N={_p['top_k']}, K={_p['leave_k']}, "
+            f"liked≥{_p['threshold']}★, neutral={_p['midpoint']}★"
         )
         _metric_cols = [c for c in _df.columns if c != "Users Evaluated"]
         st.markdown("**Metric scores vs parameter value:**")
@@ -1607,11 +1783,253 @@ def page_evaluation():
             ))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: USER PROFILE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_profile():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    from sklearn.decomposition import PCA
+
+    st.markdown(film_strip("YOUR TASTE PROFILE"), unsafe_allow_html=True)
+    st.markdown(
+        '<h1 style="font-size:1.9rem;margin:0 0 4px;color:#f0f0f0">Profile</h1>'
+        '<p style="color:#444;font-size:0.85rem;margin-bottom:24px">'
+        'Visualisations of your taste profile and how the embedding model represents it.</p>',
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.ratings:
+        st.info("Rate some movies first to see your profile.")
+        return
+
+    ratings_list = [
+        {"movieId": mid, "rating": info["rating"],
+         "title": info.get("display_title", ""),
+         "genres": str(info.get("genres", "") or "")}
+        for mid, info in st.session_state.ratings.items()
+    ]
+    ratings_df_local = pd.DataFrame(ratings_list)
+
+    # ── 1. Rating distribution ────────────────────────────────────────────────
+    st.markdown("### Rating Distribution")
+    star_options = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+    counts = [int((ratings_df_local["rating"] == s).sum()) for s in star_options]
+
+    fig1, ax1 = plt.subplots(figsize=(8, 3))
+    fig1.patch.set_facecolor("#0a0a0a")
+    ax1.set_facecolor("#0a0a0a")
+    colors = ["#e50914" if s >= 4.0 else "#c9a227" if s >= 3.0 else "#444"
+              for s in star_options]
+    ax1.bar([str(s) for s in star_options], counts, color=colors, edgecolor="#1a1a1a", linewidth=0.6)
+    ax1.set_xlabel("Star Rating", color="#888", fontsize=9)
+    ax1.set_ylabel("Count", color="#888", fontsize=9)
+    ax1.tick_params(colors="#666", labelsize=8)
+    for spine in ax1.spines.values():
+        spine.set_edgecolor("#1a1a1a")
+    ax1.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    fig1.tight_layout()
+    st.pyplot(fig1, use_container_width=True)
+    plt.close(fig1)
+
+    # ── 2. Genre taste profile ─────────────────────────────────────────────────
+    st.markdown("### Genre Taste Profile")
+    liked_g:    dict[str, float] = {}
+    disliked_g: dict[str, float] = {}
+    for row in ratings_list:
+        weight = row["rating"] - 3.0
+        for g in row["genres"].replace("|", ",").split(","):
+            g = g.strip()
+            if not g or g.lower() in ("", "unknown", "(no genres listed)"):
+                continue
+            bucket = liked_g if weight >= 0 else disliked_g
+            bucket[g] = bucket.get(g, 0.0) + abs(weight)
+
+    all_genres = sorted(set(liked_g) | set(disliked_g),
+                        key=lambda g: liked_g.get(g, 0) - disliked_g.get(g, 0),
+                        reverse=True)[:18]
+
+    if all_genres:
+        liked_vals    = [liked_g.get(g, 0)    for g in all_genres]
+        disliked_vals = [-disliked_g.get(g, 0) for g in all_genres]
+
+        fig2, ax2 = plt.subplots(figsize=(8, max(3, len(all_genres) * 0.38)))
+        fig2.patch.set_facecolor("#0a0a0a")
+        ax2.set_facecolor("#0a0a0a")
+        y = range(len(all_genres))
+        ax2.barh(list(y), liked_vals,    color="#e50914", alpha=0.85, label="Liked")
+        ax2.barh(list(y), disliked_vals, color="#1a6eb5", alpha=0.75, label="Disliked")
+        ax2.set_yticks(list(y))
+        ax2.set_yticklabels(all_genres, color="#ccc", fontsize=8)
+        ax2.axvline(0, color="#333", linewidth=0.8)
+        ax2.tick_params(axis="x", colors="#555", labelsize=7)
+        ax2.set_xlabel("Weighted influence (rating − 3.0)", color="#666", fontsize=8)
+        ax2.legend(facecolor="#111", edgecolor="#222", labelcolor="#ccc", fontsize=8)
+        for spine in ax2.spines.values():
+            spine.set_edgecolor("#1a1a1a")
+        fig2.tight_layout()
+        st.pyplot(fig2, use_container_width=True)
+        plt.close(fig2)
+
+    # ── 3. Embedding space PCA scatter ────────────────────────────────────────
+    st.markdown("### Embedding Space (PCA Projection)")
+    st.markdown(
+        '<p style="color:#555;font-size:0.8rem;margin-bottom:12px">'
+        'Each dot is a movie projected to 2D via PCA on the 128-dim embedding space. '
+        'Your rated movies are coloured by rating. The arrow shows your query vector — '
+        'the direction the model searches in to find recommendations.</p>',
+        unsafe_allow_html=True,
+    )
+
+    emb_result = load_embeddings()
+    if emb_result is None:
+        st.info("Embeddings not built yet — run the pipeline first.")
+        return
+
+    _, emb_matrix, movieid_to_idx, movie_ids_arr, titles_arr = emb_result
+
+    # PCA on full matrix (cached implicitly via @st.cache_resource on load_embeddings)
+    pca = PCA(n_components=2, random_state=42)
+    all_2d = pca.fit_transform(emb_matrix)
+
+    # Background sample — 800 random movies
+    rng = np.random.default_rng(0)
+    bg_idx = rng.choice(len(all_2d), size=min(800, len(all_2d)), replace=False)
+    bg_2d  = all_2d[bg_idx]
+
+    # Rated movies
+    rated_entries = [
+        (mid, info["rating"], info.get("display_title", ""))
+        for mid, info in st.session_state.ratings.items()
+        if mid in movieid_to_idx
+    ]
+    rated_2d      = np.array([all_2d[movieid_to_idx[m]] for m, _, _ in rated_entries])
+    rated_ratings = np.array([r for _, r, _ in rated_entries])
+    rated_titles  = [t for _, _, t in rated_entries]
+
+    # Query vector projected to 2D
+    user_df_pca = pd.DataFrame([{"movieId": m, "rating": r} for m, r, _ in rated_entries])
+    try:
+        q_vec, _ = build_user_query_vector(
+            user_ratings=user_df_pca,
+            emb_matrix=emb_matrix,
+            movieid_to_idx=movieid_to_idx,
+            weighted=True,
+            rating_midpoint=3.0,
+        )
+        q_2d = pca.transform(q_vec.reshape(1, -1))[0]
+        has_query = True
+    except ValueError:
+        has_query = False
+
+    # Recommended movies (if they exist in session state)
+    recs_df = st.session_state.get("recs")
+    rec_2d  = None
+    if recs_df is not None and not recs_df.empty:
+        rec_ids = [int(mid) for mid in recs_df["movieId"] if int(mid) in movieid_to_idx]
+        if rec_ids:
+            rec_2d = np.array([all_2d[movieid_to_idx[m]] for m in rec_ids[:15]])
+
+    fig3, ax3 = plt.subplots(figsize=(9, 6))
+    fig3.patch.set_facecolor("#0a0a0a")
+    ax3.set_facecolor("#0a0a0a")
+
+    # Background
+    ax3.scatter(bg_2d[:, 0], bg_2d[:, 1], s=4, c="#1e1e1e", alpha=0.6, zorder=1,
+                label=f"All movies (sample {len(bg_2d)})")
+
+    # Recommendations
+    if rec_2d is not None:
+        ax3.scatter(rec_2d[:, 0], rec_2d[:, 1], s=110, marker="*",
+                    c="#f5c518", zorder=4, label="Recommended", edgecolors="#333", linewidth=0.4)
+
+    # Rated movies (coloured by rating)
+    if len(rated_2d):
+        cmap = mcolors.LinearSegmentedColormap.from_list(
+            "taste", ["#1a6eb5", "#888", "#e50914"]
+        )
+        sc = ax3.scatter(
+            rated_2d[:, 0], rated_2d[:, 1],
+            c=rated_ratings, cmap=cmap, vmin=0.5, vmax=5.0,
+            s=90, zorder=3, edgecolors="#f0f0f0", linewidth=0.6,
+        )
+        cb = fig3.colorbar(sc, ax=ax3, fraction=0.025, pad=0.01)
+        cb.set_label("Your rating", color="#888", fontsize=8)
+        cb.ax.tick_params(colors="#666", labelsize=7)
+
+        # Label a few rated movies
+        for i, (x, y) in enumerate(rated_2d[:8]):
+            ax3.annotate(
+                rated_titles[i][:22], (x, y),
+                textcoords="offset points", xytext=(5, 4),
+                fontsize=6, color="#aaa", zorder=5,
+            )
+
+    # Query vector arrow from origin (PCA centroid ≈ 0)
+    if has_query:
+        scale = np.percentile(np.abs(all_2d), 70)
+        dx, dy = q_2d[0] * scale, q_2d[1] * scale
+        ax3.annotate(
+            "", xy=(dx, dy), xytext=(0, 0),
+            arrowprops=dict(arrowstyle="->", color="#e50914", lw=2.2),
+            zorder=6,
+        )
+        ax3.text(dx * 1.05, dy * 1.05, "Query\nvector", color="#e50914",
+                 fontsize=7.5, ha="center", zorder=6)
+
+    ax3.set_xlabel("PC 1", color="#555", fontsize=8)
+    ax3.set_ylabel("PC 2", color="#555", fontsize=8)
+    ax3.tick_params(colors="#333", labelsize=7)
+    for spine in ax3.spines.values():
+        spine.set_edgecolor("#1a1a1a")
+    legend = ax3.legend(facecolor="#111", edgecolor="#222", labelcolor="#bbb", fontsize=7.5,
+                        loc="upper right")
+    fig3.tight_layout()
+    st.pyplot(fig3, use_container_width=True)
+    plt.close(fig3)
+
+    st.markdown(
+        '<p style="color:#333;font-size:0.72rem;margin-top:8px">'
+        'PCA explains only a fraction of variance in 128-dim space — clusters are '
+        'real but the 2D view is a projection, not the full picture.</p>',
+        unsafe_allow_html=True,
+    )
+
+    # ── 4. Query vector weight table ──────────────────────────────────────────
+    st.markdown("### Rating → Query Weight Breakdown")
+    st.markdown(
+        '<p style="color:#555;font-size:0.8rem;margin-bottom:10px">'
+        'How each of your rated movies contributes to the query vector '
+        '(weight = rating − 3.0). Positive weights attract; negative weights repel.</p>',
+        unsafe_allow_html=True,
+    )
+    weight_rows = sorted(
+        [{"Movie": info.get("display_title",""), "Your Rating": info["rating"],
+          "Weight": round(info["rating"] - 3.0, 1),
+          "Effect": "Attracts ▲" if info["rating"] >= 3.0 else "Repels ▼"}
+         for info in st.session_state.ratings.values()],
+        key=lambda r: abs(r["Weight"]), reverse=True,
+    )
+    weight_df = pd.DataFrame(weight_rows)
+    st.dataframe(
+        weight_df.style
+        .applymap(lambda v: "color:#e50914" if isinstance(v, str) and "▲" in v
+                  else ("color:#1a6eb5" if isinstance(v, str) and "▼" in v else ""),
+                  subset=["Effect"])
+        .format({"Weight": "{:+.1f}", "Your Rating": "{:.1f}"}),
+        use_container_width=True, hide_index=True,
+    )
+
+
 # ── Module-level page objects (url_path must match <a href> links in page_home) ─
 _p_home       = st.Page(page_home,       title="Home",                    icon="🏠")
 _p_browse     = st.Page(page_browse,     title="Browse",                  icon="🎬", url_path="browse")
 _p_my_ratings = st.Page(page_my_ratings, title=f"My Ratings ({n_rated})", icon="⭐", url_path="my-ratings")
 _p_for_you    = st.Page(page_for_you,    title="For You",                 icon="🎯", url_path="for-you")
+_p_profile    = st.Page(page_profile,    title="My Profile",              icon="📈", url_path="profile")
 _p_evaluation = st.Page(page_evaluation, title="Evaluation",              icon="📊", url_path="evaluation")
 
 
@@ -1658,5 +2076,5 @@ with st.sidebar:
 # NAVIGATION — runs the current page
 # ═══════════════════════════════════════════════════════════════════════════════
 
-pg = st.navigation([_p_home, _p_browse, _p_my_ratings, _p_for_you, _p_evaluation])
+pg = st.navigation([_p_home, _p_browse, _p_my_ratings, _p_for_you, _p_profile, _p_evaluation])
 pg.run()

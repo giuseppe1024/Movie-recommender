@@ -2,6 +2,21 @@ import re
 import pandas as pd
 from pathlib import Path
 
+
+def aggregate_tags(tags_path: str) -> pd.DataFrame:
+    """
+    Load tags.csv and return a DataFrame with one row per movieId containing
+    a single string of all unique, lowercased tags for that movie.
+    """
+    tags = pd.read_csv(tags_path)
+    tags["tag"] = tags["tag"].astype(str).str.lower().str.strip()
+    movie_tags = (
+        tags.groupby("movieId")["tag"]
+        .apply(lambda ts: " ".join(ts.unique()))
+        .reset_index(name="tags_text")
+    )
+    return movie_tags
+
 def year_extraction(movie_titles):
     if pd.isna(movie_titles):
         return None
@@ -24,15 +39,26 @@ def genres_clean(genre):
 
 
 # Cleaning 
-def clean_movies(movies):
+def clean_movies(movies, tags_df=None):
     movies = movies.copy()
     movies = movies.drop_duplicates(subset=["movieId"])
     movies["year"] = movies["title"].apply(year_extraction)
     movies["clean_titles"] = movies["title"].apply(titles_clean)
     movies["clean_genres"] = movies["genres"].apply(genres_clean)
-    movies["movies_text"] = (
-        movies["clean_titles"].fillna("") + " " + movies["clean_genres"].fillna("")
-    ).str.strip()
+
+    if tags_df is not None:
+        movies = movies.merge(tags_df, on="movieId", how="left")
+        movies["tags_text"] = movies["tags_text"].fillna("")
+        movies["movies_text"] = (
+            movies["clean_titles"].fillna("") + " "
+            + movies["clean_genres"].fillna("") + " "
+            + movies["tags_text"]
+        ).str.strip()
+    else:
+        movies["movies_text"] = (
+            movies["clean_titles"].fillna("") + " " + movies["clean_genres"].fillna("")
+        ).str.strip()
+
     return movies
 
 
@@ -94,14 +120,17 @@ def apply_filters(clean_df, clean_ratings_df, movie_stats, min_ratings=5):
 
 # Main
 def load_data(movies_path="movies.csv", ratings_path="ratings.csv",
-              output_dir="processed", min_ratings=5):
+              tags_path=None, output_dir="processed", min_ratings=5):
 
     # Load
     movies = pd.read_csv(movies_path)
     ratings = pd.read_csv(ratings_path)
+    tags_df = aggregate_tags(tags_path) if tags_path else None
+    if tags_df is not None:
+        print(f"Loaded tags for {tags_df['movieId'].nunique():,} movies.")
 
     # Clean
-    clean_df = clean_movies(movies)
+    clean_df = clean_movies(movies, tags_df=tags_df)
     clean_ratings_df = clean_ratings(ratings)
     clean_ratings_df = movies_filter(clean_ratings_df, clean_df)
 

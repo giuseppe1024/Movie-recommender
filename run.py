@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 # ── Key paths ─────────────────────────────────────────────────────────────────
 MOVIES_RAW    = ROOT / "data" / "movies.csv"
 RATINGS_RAW   = ROOT / "data" / "ratings.csv"
+TAGS_RAW      = ROOT / "data" / "tags.csv"
 PROCESSED_DIR = ROOT / "data" / "processed"
 EMBEDDINGS    = ROOT / "embeddings" / "movie_embeddings.csv"
 EVAL_RESULTS  = ROOT / "data" / "eval_results.json"
@@ -51,6 +52,7 @@ def download_movielens():
     shutil.copy(src / "movies.csv",  MOVIES_RAW)
     shutil.copy(src / "ratings.csv", RATINGS_RAW)
     shutil.copy(src / "links.csv",   ROOT / "data" / "links.csv")
+    shutil.copy(src / "tags.csv",    TAGS_RAW)
     shutil.rmtree(src)
     zip_path.unlink(missing_ok=True)
     print("Raw data saved to data/movies.csv and data/ratings.csv\n")
@@ -65,6 +67,7 @@ def process_data():
     load_data(
         movies_path=str(MOVIES_RAW),
         ratings_path=str(RATINGS_RAW),
+        tags_path=str(TAGS_RAW) if TAGS_RAW.exists() else None,
         output_dir=str(PROCESSED_DIR),
     )
     print("Processed data saved to data/processed/\n")
