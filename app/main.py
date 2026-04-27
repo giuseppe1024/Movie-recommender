@@ -1546,9 +1546,7 @@ def page_evaluation():
     )
 
     _param_labels = {
-        "top_k":               "N — recommendations shown",
         "leave_k":             "K — movies held out",
-        "min_relevant_test":   "Min liked movies in test set",
         "relevance_threshold": "Liked threshold (rating ≥)",
     }
     sa_col1, sa_col2 = st.columns([3, 1])
