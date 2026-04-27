@@ -8,13 +8,14 @@
   "min_relevant_test": 1,
   "relevance_threshold": 4.0,
   "dislike_threshold": 2.5,
-  "precision_at_k": 0.21939767573696142,
-  "hit_rate_at_k": 0.5963467768059604,
-  "ndcg_at_k": 0.2821248467529972,
-  "graded_ndcg_at_k": 0.12056135246892663,
-  "pairwise_rank_acc_at_k": 0.564199799964655,
-  "pairwise_rank_acc_users": 424,
-  "dislike_rate_at_k": 0.030849233344131304,
-  "coverage_at_k": 0.39654699917785696,
-  "coverage_pct_at_k": 39.6546999177857
+  "rating_midpoint": 2.5,
+  "precision_at_k": 0.2371598289164494,
+  "hit_rate_at_k": 0.6245051830255912,
+  "ndcg_at_k": 0.29987772987770506,
+  "graded_ndcg_at_k": 0.12861611336168294,
+  "pairwise_rank_acc_at_k": 0.5760469236521749,
+  "pairwise_rank_acc_users": 436,
+  "dislike_rate_at_k": 0.037976556835886285,
+  "coverage_at_k": 0.2891203069334064,
+  "coverage_pct_at_k": 28.91203069334064
 }

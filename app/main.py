@@ -436,18 +436,9 @@ def get_recommendations(top_k: int, rating_midpoint: float = 3.0) -> pd.DataFram
     sims[rated_mask] = -np.inf
     top_idx = np.argsort(-sims)[:top_k]
 
-    raw_scores = sims[top_idx]
+    raw_scores = sims[top_idx]   # raw cosine similarities — honest, no normalization
 
-    # Normalize scores to [0, 1] within the returned list so the top pick always
-    # reads as ~100%.  Cosine similarity in high-dimensional space is naturally low
-    # (~0.2-0.4 for strong matches) — raw values would look misleadingly small.
-    s_min, s_max = float(raw_scores.min()), float(raw_scores.max())
-    if s_max > s_min:
-        display_scores = (raw_scores - s_min) / (s_max - s_min)
-    else:
-        display_scores = np.ones_like(raw_scores)
-
-    # "Because you liked X" — find each rec's most similar above-midpoint movie
+    # ── "Most similar liked movie" via embedding dot-product ──────────────────
     liked_ids = [
         mid for mid, info in st.session_state.ratings.items()
         if mid in movieid_to_idx and info["rating"] >= rating_midpoint
@@ -464,11 +455,45 @@ def get_recommendations(top_k: int, rating_midpoint: float = 3.0) -> pd.DataFram
     else:
         similar_to = [""] * len(top_idx)
 
+    # ── Genre overlap with user's liked taste ─────────────────────────────────
+    liked_genre_set: set[str] = set()
+    for info in st.session_state.ratings.values():
+        if info["rating"] >= rating_midpoint:
+            for g in str(info.get("genres", "")).replace("|", ",").split(","):
+                g = g.strip()
+                if g and g.lower() not in ("", "unknown", "(no genres listed)"):
+                    liked_genre_set.add(g.lower())
+
+    shared_genres_list: list[str] = []
+    community_list: list[str] = []
+    for mid in movie_ids[top_idx]:
+        cat_row = catalog[catalog["movieId"] == int(mid)]
+        # shared genres
+        if not cat_row.empty and liked_genre_set:
+            raw_g = str(cat_row["genres"].iloc[0] or "")
+            movie_genres = [g.strip() for g in raw_g.replace("|", ",").split(",") if g.strip()]
+            shared = [g for g in movie_genres if g.lower() in liked_genre_set]
+            shared_genres_list.append(", ".join(shared[:2]) if shared else "")
+        else:
+            shared_genres_list.append("")
+        # community stats
+        if not cat_row.empty:
+            mean_r = cat_row["mean_rating"].iloc[0] if "mean_rating" in cat_row.columns else float("nan")
+            cnt    = cat_row["count"].iloc[0]       if "count"       in cat_row.columns else float("nan")
+            if pd.notna(mean_r) and pd.notna(cnt) and cnt > 0:
+                community_list.append(f"{float(mean_r):.1f}★ avg · {int(cnt):,} ratings")
+            else:
+                community_list.append("")
+        else:
+            community_list.append("")
+
     return pd.DataFrame({
-        "movieId":    movie_ids[top_idx],
-        "title":      titles[top_idx],
-        "score":      display_scores,
-        "similar_to": similar_to,
+        "movieId":       movie_ids[top_idx],
+        "title":         titles[top_idx],
+        "score":         raw_scores,
+        "similar_to":    similar_to,
+        "shared_genres": shared_genres_list,
+        "community":     community_list,
     }).reset_index(drop=True)
 
 
@@ -1136,7 +1161,6 @@ def _render_rec_list(recs: pd.DataFrame) -> None:
         raw_t  = str(row["title"])
         dtitle = format_display_title(raw_t)
         score  = float(row["score"])
-        pct    = max(0.0, min(100.0, score * 100))
         catalog_row = catalog[catalog["movieId"] == mid]
         tmdb_id = catalog_row["tmdbId"].iloc[0] if not catalog_row.empty else None
         omdb = fetch_movie_meta(dtitle, None, tmdb_id)
@@ -1161,18 +1185,18 @@ def _render_rec_list(recs: pd.DataFrame) -> None:
                 st.markdown(small_poster_html(mid), unsafe_allow_html=True)
 
         with col_info:
-            director   = (omdb or {}).get("director", "")
-            genre      = (omdb or {}).get("genre", "")
-            plot       = (omdb or {}).get("plot", "")
-            similar_to = str(row.get("similar_to", "")) if "similar_to" in row.index else ""
+            director      = (omdb or {}).get("director", "")
+            genre         = (omdb or {}).get("genre", "")
+            plot          = (omdb or {}).get("plot", "")
+            similar_to    = str(row.get("similar_to",    "")) if "similar_to"    in row.index else ""
+            shared_genres = str(row.get("shared_genres", "")) if "shared_genres" in row.index else ""
+            community     = str(row.get("community",     "")) if "community"     in row.index else ""
 
-            # Genre tags from catalog as a fallback when OMDB isn't configured
             cat_row = catalog[catalog["movieId"] == mid]
             cat_genres = ""
             if not cat_row.empty:
                 raw_g = str(cat_row["genres"].iloc[0] or "")
                 cat_genres = raw_g.replace("|", " · ") if raw_g else ""
-
             display_genre = genre or cat_genres
 
             st.markdown(
@@ -1194,12 +1218,20 @@ def _render_rec_list(recs: pd.DataFrame) -> None:
                     unsafe_allow_html=True,
                 )
 
+            # ── 3 feature bullets explaining why this was recommended ──────────
+            features: list[tuple[str, str]] = []
             if similar_to:
+                features.append(("🔗", f"Fans of <i>{similar_to[:45]}</i> also enjoyed this"))
+            if shared_genres:
+                features.append(("🎭", f"Matches your taste for <b>{shared_genres}</b>"))
+            if community:
+                features.append(("⭐", community))
+            for icon, text in features[:3]:
                 st.markdown(
-                    f'<div style="margin-top:5px">'
-                    f'<span style="background:#1a0000;border:1px solid #500;color:#e57373;'
-                    f'padding:2px 10px;border-radius:12px;font-size:0.71rem">'
-                    f'Because you liked <i>{similar_to[:50]}</i></span></div>',
+                    f'<div style="display:flex;align-items:flex-start;gap:6px;margin-top:4px">'
+                    f'<span style="font-size:0.78rem;line-height:1.5">{icon}</span>'
+                    f'<span style="color:#666;font-size:0.72rem;line-height:1.5">{text}</span>'
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
 
@@ -1211,13 +1243,15 @@ def _render_rec_list(recs: pd.DataFrame) -> None:
                 )
 
         with col_score:
+            # Raw cosine similarity — honest value, bar relative to max possible (1.0)
+            bar_w = max(0, min(100, int(score * 100)))
             st.markdown(
                 f'<div style="text-align:right;padding-top:4px">'
-                f'<div style="color:#f5c518;font-size:1.2rem;font-weight:700">{pct:.1f}%</div>'
-                f'<div style="color:#333;font-size:0.7rem;margin-bottom:8px">match</div>'
+                f'<div style="color:#f5c518;font-size:1.15rem;font-weight:700">{score:.3f}</div>'
+                f'<div style="color:#333;font-size:0.7rem;margin-bottom:8px">cosine sim</div>'
                 f'<div style="background:#181818;border-radius:4px;height:5px">'
                 f'<div style="background:linear-gradient(90deg,#e50914,#ff8080);'
-                f'border-radius:4px;height:5px;width:{int(pct)}%"></div></div>'
+                f'border-radius:4px;height:5px;width:{bar_w}%"></div></div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -1717,7 +1751,6 @@ def page_evaluation():
         "leave_k":             "K — movies held out",
         "relevance_threshold": "Liked threshold (rating ≥)",
         "rating_midpoint":     "Rating neutral point (query temperature)",
-        "top_k":               "N — recommendations shown",
     }
     sa_col1, sa_col2 = st.columns([3, 1])
     with sa_col1:
@@ -1792,6 +1825,7 @@ def page_profile():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers '3d' projection
     from sklearn.decomposition import PCA
 
     st.markdown(film_strip("YOUR TASTE PROFILE"), unsafe_allow_html=True)
@@ -1812,31 +1846,18 @@ def page_profile():
          "genres": str(info.get("genres", "") or "")}
         for mid, info in st.session_state.ratings.items()
     ]
-    ratings_df_local = pd.DataFrame(ratings_list)
 
-    # ── 1. Rating distribution ────────────────────────────────────────────────
-    st.markdown("### Rating Distribution")
-    star_options = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
-    counts = [int((ratings_df_local["rating"] == s).sum()) for s in star_options]
-
-    fig1, ax1 = plt.subplots(figsize=(8, 3))
-    fig1.patch.set_facecolor("#0a0a0a")
-    ax1.set_facecolor("#0a0a0a")
-    colors = ["#e50914" if s >= 4.0 else "#c9a227" if s >= 3.0 else "#444"
-              for s in star_options]
-    ax1.bar([str(s) for s in star_options], counts, color=colors, edgecolor="#1a1a1a", linewidth=0.6)
-    ax1.set_xlabel("Star Rating", color="#888", fontsize=9)
-    ax1.set_ylabel("Count", color="#888", fontsize=9)
-    ax1.tick_params(colors="#666", labelsize=8)
-    for spine in ax1.spines.values():
-        spine.set_edgecolor("#1a1a1a")
-    ax1.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
-    fig1.tight_layout()
-    st.pyplot(fig1, use_container_width=True)
-    plt.close(fig1)
-
-    # ── 2. Genre taste profile ─────────────────────────────────────────────────
+    # ── 1. Genre taste profile ─────────────────────────────────────────────────
     st.markdown("### Genre Taste Profile")
+    st.markdown(
+        '<p style="color:#555;font-size:0.8rem;margin-bottom:12px">'
+        'Genres are weighted by how far your rating is from neutral (3★). '
+        '<span style="color:#1a7a40">Green bars</span> = genres you tend to enjoy; '
+        '<span style="color:#e50914">red bars</span> = genres you tend to dislike. '
+        'Longer bar = stronger signal.</p>',
+        unsafe_allow_html=True,
+    )
+
     liked_g:    dict[str, float] = {}
     disliked_g: dict[str, float] = {}
     for row in ratings_list:
@@ -1848,39 +1869,53 @@ def page_profile():
             bucket = liked_g if weight >= 0 else disliked_g
             bucket[g] = bucket.get(g, 0.0) + abs(weight)
 
-    all_genres = sorted(set(liked_g) | set(disliked_g),
-                        key=lambda g: liked_g.get(g, 0) - disliked_g.get(g, 0),
-                        reverse=True)[:18]
+    all_genres = sorted(
+        set(liked_g) | set(disliked_g),
+        key=lambda g: liked_g.get(g, 0) - disliked_g.get(g, 0),
+        reverse=True,
+    )[:18]
 
     if all_genres:
-        liked_vals    = [liked_g.get(g, 0)    for g in all_genres]
+        liked_vals    = [liked_g.get(g, 0)     for g in all_genres]
         disliked_vals = [-disliked_g.get(g, 0) for g in all_genres]
 
-        fig2, ax2 = plt.subplots(figsize=(8, max(3, len(all_genres) * 0.38)))
-        fig2.patch.set_facecolor("#0a0a0a")
-        ax2.set_facecolor("#0a0a0a")
+        fig1, ax1 = plt.subplots(figsize=(8, max(3, len(all_genres) * 0.38)))
+        fig1.patch.set_facecolor("#0a0a0a")
+        ax1.set_facecolor("#0a0a0a")
         y = range(len(all_genres))
-        ax2.barh(list(y), liked_vals,    color="#e50914", alpha=0.85, label="Liked")
-        ax2.barh(list(y), disliked_vals, color="#1a6eb5", alpha=0.75, label="Disliked")
-        ax2.set_yticks(list(y))
-        ax2.set_yticklabels(all_genres, color="#ccc", fontsize=8)
-        ax2.axvline(0, color="#333", linewidth=0.8)
-        ax2.tick_params(axis="x", colors="#555", labelsize=7)
-        ax2.set_xlabel("Weighted influence (rating − 3.0)", color="#666", fontsize=8)
-        ax2.legend(facecolor="#111", edgecolor="#222", labelcolor="#ccc", fontsize=8)
-        for spine in ax2.spines.values():
+        ax1.barh(list(y), liked_vals,    color="#1a7a40", alpha=0.9,  label="Liked")
+        ax1.barh(list(y), disliked_vals, color="#e50914", alpha=0.85, label="Disliked")
+        ax1.set_yticks(list(y))
+        ax1.set_yticklabels(all_genres, color="#ccc", fontsize=8)
+        ax1.axvline(0, color="#333", linewidth=0.8)
+        ax1.tick_params(axis="x", colors="#555", labelsize=7)
+        ax1.set_xlabel("Weighted influence (rating − 3.0)", color="#666", fontsize=8)
+        ax1.legend(facecolor="#111", edgecolor="#222", labelcolor="#ccc", fontsize=8)
+        for spine in ax1.spines.values():
             spine.set_edgecolor("#1a1a1a")
-        fig2.tight_layout()
-        st.pyplot(fig2, use_container_width=True)
-        plt.close(fig2)
+        fig1.tight_layout()
+        st.pyplot(fig1, use_container_width=True)
+        plt.close(fig1)
 
-    # ── 3. Embedding space PCA scatter ────────────────────────────────────────
-    st.markdown("### Embedding Space (PCA Projection)")
+    # ── 2. Embedding space — 3-component PCA scatter ──────────────────────────
+    st.markdown("### Embedding Space (3-Component PCA Projection)")
+
     st.markdown(
-        '<p style="color:#555;font-size:0.8rem;margin-bottom:12px">'
-        'Each dot is a movie projected to 2D via PCA on the 128-dim embedding space. '
-        'Your rated movies are coloured by rating. The arrow shows your query vector — '
-        'the direction the model searches in to find recommendations.</p>',
+        '<div style="background:#111;border:1px solid #1e1e1e;border-left:4px solid #1a6eb5;'
+        'border-radius:8px;padding:14px 18px;margin-bottom:16px">'
+        '<p style="color:#ccc;font-size:0.83rem;line-height:1.7;margin:0">'
+        '<b style="color:#f0f0f0">What are PC1, PC2, PC3?</b><br>'
+        'Our model represents each movie as a 128-dimensional vector. '
+        'PCA (Principal Component Analysis) finds the directions in that high-dimensional space '
+        'where movies vary the most. <b>PC1</b> is the single axis that captures the largest spread '
+        'of the data — roughly the most important "dimension of taste". '
+        '<b>PC2</b> is the second most important, orthogonal to PC1. '
+        '<b>PC3</b> is the third. '
+        'Together they capture the top 3 directions of variation across the entire catalog. '
+        'The specific meaning (genre? tone? era?) is emergent from training, not hand-crafted. '
+        'The red arrow is your <b>query vector</b> — the direction in embedding space the model '
+        'searches when generating your recommendations.'
+        '</p></div>',
         unsafe_allow_html=True,
     )
 
@@ -1889,16 +1924,20 @@ def page_profile():
         st.info("Embeddings not built yet — run the pipeline first.")
         return
 
-    _, emb_matrix, movieid_to_idx, movie_ids_arr, titles_arr = emb_result
+    _, emb_matrix, movieid_to_idx, movie_ids_arr, _ = emb_result
 
-    # PCA on full matrix (cached implicitly via @st.cache_resource on load_embeddings)
-    pca = PCA(n_components=2, random_state=42)
-    all_2d = pca.fit_transform(emb_matrix)
+    pca = PCA(n_components=3, random_state=42)
+    all_3d = pca.fit_transform(emb_matrix)
+    evr = pca.explained_variance_ratio_
 
-    # Background sample — 800 random movies
+    axis_labels = [
+        f"PC{i+1} ({evr[i]*100:.1f}% var)" for i in range(3)
+    ]
+
+    # Background sample
     rng = np.random.default_rng(0)
-    bg_idx = rng.choice(len(all_2d), size=min(800, len(all_2d)), replace=False)
-    bg_2d  = all_2d[bg_idx]
+    bg_idx = rng.choice(len(all_3d), size=min(600, len(all_3d)), replace=False)
+    bg_3d  = all_3d[bg_idx]
 
     # Rated movies
     rated_entries = [
@@ -1906,11 +1945,12 @@ def page_profile():
         for mid, info in st.session_state.ratings.items()
         if mid in movieid_to_idx
     ]
-    rated_2d      = np.array([all_2d[movieid_to_idx[m]] for m, _, _ in rated_entries])
+    rated_3d      = np.array([all_3d[movieid_to_idx[m]] for m, _, _ in rated_entries]) \
+                    if rated_entries else np.empty((0, 3))
     rated_ratings = np.array([r for _, r, _ in rated_entries])
     rated_titles  = [t for _, _, t in rated_entries]
 
-    # Query vector projected to 2D
+    # Query vector
     user_df_pca = pd.DataFrame([{"movieId": m, "rating": r} for m, r, _ in rated_entries])
     try:
         q_vec, _ = build_user_query_vector(
@@ -1920,107 +1960,88 @@ def page_profile():
             weighted=True,
             rating_midpoint=3.0,
         )
-        q_2d = pca.transform(q_vec.reshape(1, -1))[0]
+        q_3d = pca.transform(q_vec.reshape(1, -1))[0]
         has_query = True
     except ValueError:
         has_query = False
 
-    # Recommended movies (if they exist in session state)
+    # Recommended movies
     recs_df = st.session_state.get("recs")
-    rec_2d  = None
+    rec_3d  = None
     if recs_df is not None and not recs_df.empty:
         rec_ids = [int(mid) for mid in recs_df["movieId"] if int(mid) in movieid_to_idx]
         if rec_ids:
-            rec_2d = np.array([all_2d[movieid_to_idx[m]] for m in rec_ids[:15]])
+            rec_3d = np.array([all_3d[movieid_to_idx[m]] for m in rec_ids[:15]])
 
-    fig3, ax3 = plt.subplots(figsize=(9, 6))
-    fig3.patch.set_facecolor("#0a0a0a")
-    ax3.set_facecolor("#0a0a0a")
+    fig2 = plt.figure(figsize=(10, 7))
+    fig2.patch.set_facecolor("#0a0a0a")
+    ax2  = fig2.add_subplot(111, projection="3d")
+    ax2.set_facecolor("#0a0a0a")
 
     # Background
-    ax3.scatter(bg_2d[:, 0], bg_2d[:, 1], s=4, c="#1e1e1e", alpha=0.6, zorder=1,
-                label=f"All movies (sample {len(bg_2d)})")
+    ax2.scatter(bg_3d[:, 0], bg_3d[:, 1], bg_3d[:, 2],
+                s=3, c="#1e1e1e", alpha=0.5, zorder=1,
+                label=f"All movies (n={len(bg_3d)})")
 
     # Recommendations
-    if rec_2d is not None:
-        ax3.scatter(rec_2d[:, 0], rec_2d[:, 1], s=110, marker="*",
-                    c="#f5c518", zorder=4, label="Recommended", edgecolors="#333", linewidth=0.4)
+    if rec_3d is not None:
+        ax2.scatter(rec_3d[:, 0], rec_3d[:, 1], rec_3d[:, 2],
+                    s=100, marker="*", c="#f5c518", zorder=4,
+                    label="Recommended", edgecolors="#333", linewidth=0.3)
 
-    # Rated movies (coloured by rating)
-    if len(rated_2d):
+    # Rated movies — green (liked) to red (disliked)
+    if len(rated_3d):
         cmap = mcolors.LinearSegmentedColormap.from_list(
-            "taste", ["#1a6eb5", "#888", "#e50914"]
+            "taste", ["#e50914", "#888888", "#1a7a40"]
         )
-        sc = ax3.scatter(
-            rated_2d[:, 0], rated_2d[:, 1],
+        sc = ax2.scatter(
+            rated_3d[:, 0], rated_3d[:, 1], rated_3d[:, 2],
             c=rated_ratings, cmap=cmap, vmin=0.5, vmax=5.0,
-            s=90, zorder=3, edgecolors="#f0f0f0", linewidth=0.6,
+            s=80, zorder=3, edgecolors="#f0f0f0", linewidth=0.5,
         )
-        cb = fig3.colorbar(sc, ax=ax3, fraction=0.025, pad=0.01)
-        cb.set_label("Your rating", color="#888", fontsize=8)
-        cb.ax.tick_params(colors="#666", labelsize=7)
+        cb = fig2.colorbar(sc, ax=ax2, fraction=0.02, pad=0.1, shrink=0.6)
+        cb.set_label("Your rating", color="#888", fontsize=7)
+        cb.ax.tick_params(colors="#666", labelsize=6)
 
-        # Label a few rated movies
-        for i, (x, y) in enumerate(rated_2d[:8]):
-            ax3.annotate(
-                rated_titles[i][:22], (x, y),
-                textcoords="offset points", xytext=(5, 4),
-                fontsize=6, color="#aaa", zorder=5,
-            )
+        # Label up to 8 rated movies
+        for i in range(min(8, len(rated_3d))):
+            x, y, z = rated_3d[i]
+            ax2.text(x, y, z, f" {rated_titles[i][:20]}", fontsize=5.5, color="#aaa", zorder=5)
 
-    # Query vector arrow from origin (PCA centroid ≈ 0)
+    # Query vector arrow (quiver from origin)
     if has_query:
-        scale = np.percentile(np.abs(all_2d), 70)
-        dx, dy = q_2d[0] * scale, q_2d[1] * scale
-        ax3.annotate(
-            "", xy=(dx, dy), xytext=(0, 0),
-            arrowprops=dict(arrowstyle="->", color="#e50914", lw=2.2),
-            zorder=6,
-        )
-        ax3.text(dx * 1.05, dy * 1.05, "Query\nvector", color="#e50914",
-                 fontsize=7.5, ha="center", zorder=6)
+        scale = float(np.percentile(np.abs(all_3d), 68))
+        dx, dy, dz = q_3d * scale
+        ax2.quiver(0, 0, 0, dx, dy, dz,
+                   color="#e50914", linewidth=2.2, arrow_length_ratio=0.18, zorder=6)
+        ax2.text(dx * 1.12, dy * 1.12, dz * 1.12, "Query\nvector",
+                 color="#e50914", fontsize=7, ha="center", zorder=7)
 
-    ax3.set_xlabel("PC 1", color="#555", fontsize=8)
-    ax3.set_ylabel("PC 2", color="#555", fontsize=8)
-    ax3.tick_params(colors="#333", labelsize=7)
-    for spine in ax3.spines.values():
-        spine.set_edgecolor("#1a1a1a")
-    legend = ax3.legend(facecolor="#111", edgecolor="#222", labelcolor="#bbb", fontsize=7.5,
-                        loc="upper right")
-    fig3.tight_layout()
-    st.pyplot(fig3, use_container_width=True)
-    plt.close(fig3)
+    ax2.set_xlabel(axis_labels[0], color="#555", fontsize=7, labelpad=4)
+    ax2.set_ylabel(axis_labels[1], color="#555", fontsize=7, labelpad=4)
+    ax2.set_zlabel(axis_labels[2], color="#555", fontsize=7, labelpad=4)
+    ax2.tick_params(colors="#2a2a2a", labelsize=6)
+    ax2.xaxis.pane.fill = False
+    ax2.yaxis.pane.fill = False
+    ax2.zaxis.pane.fill = False
+    ax2.xaxis.pane.set_edgecolor("#1a1a1a")
+    ax2.yaxis.pane.set_edgecolor("#1a1a1a")
+    ax2.zaxis.pane.set_edgecolor("#1a1a1a")
+    ax2.grid(True, color="#111111", linewidth=0.4)
+    ax2.legend(facecolor="#111", edgecolor="#222", labelcolor="#bbb",
+               fontsize=7, loc="upper left")
+    fig2.tight_layout()
+    st.pyplot(fig2, use_container_width=True)
+    plt.close(fig2)
 
+    total_var = sum(evr[:3]) * 100
     st.markdown(
-        '<p style="color:#333;font-size:0.72rem;margin-top:8px">'
-        'PCA explains only a fraction of variance in 128-dim space — clusters are '
-        'real but the 2D view is a projection, not the full picture.</p>',
+        f'<p style="color:#333;font-size:0.72rem;margin-top:4px">'
+        f'PC1+PC2+PC3 capture {total_var:.1f}% of the variance in the 128-dim embedding space. '
+        f'The remaining {100-total_var:.1f}% is spread across the other 125 dimensions '
+        f'and not visible here — real clusters are stronger than they appear in this projection.'
+        f'</p>',
         unsafe_allow_html=True,
-    )
-
-    # ── 4. Query vector weight table ──────────────────────────────────────────
-    st.markdown("### Rating → Query Weight Breakdown")
-    st.markdown(
-        '<p style="color:#555;font-size:0.8rem;margin-bottom:10px">'
-        'How each of your rated movies contributes to the query vector '
-        '(weight = rating − 3.0). Positive weights attract; negative weights repel.</p>',
-        unsafe_allow_html=True,
-    )
-    weight_rows = sorted(
-        [{"Movie": info.get("display_title",""), "Your Rating": info["rating"],
-          "Weight": round(info["rating"] - 3.0, 1),
-          "Effect": "Attracts ▲" if info["rating"] >= 3.0 else "Repels ▼"}
-         for info in st.session_state.ratings.values()],
-        key=lambda r: abs(r["Weight"]), reverse=True,
-    )
-    weight_df = pd.DataFrame(weight_rows)
-    st.dataframe(
-        weight_df.style
-        .applymap(lambda v: "color:#e50914" if isinstance(v, str) and "▲" in v
-                  else ("color:#1a6eb5" if isinstance(v, str) and "▼" in v else ""),
-                  subset=["Effect"])
-        .format({"Weight": "{:+.1f}", "Your Rating": "{:.1f}"}),
-        use_container_width=True, hide_index=True,
     )
 
 
