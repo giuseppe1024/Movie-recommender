@@ -23,7 +23,7 @@ STATS_PATH      = PROJECT_ROOT / "data" / "processed" / "movie_stats.csv"
 OMDB_CACHE_PATH   = PROJECT_ROOT / "data" / "omdb_cache.json"
 EVAL_RESULTS_PATH = PROJECT_ROOT / "data" / "eval_results.json"
 LINKS_PATH        = PROJECT_ROOT / "data" / "links.csv"
-POSTERS_PATH      = PROJECT_ROOT / "data" / "processed" / "poster_mapping.csv"
+POSTER_MAPPING_PATH = PROJECT_ROOT / "data" / "processed" / "poster_mapping.csv"
 
 RATING_OPTIONS = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
 PAGE_SIZE = 20
@@ -104,20 +104,36 @@ st.markdown("""
 .stApp { background: #0a0a0a; }
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; color: #e8e8e8; }
 
-[data-testid="stSidebar"] { background: #0d0d0d !important; border-right: 1px solid #1c1c1c; }
+/* ── Sidebar: wider, deeper shadow, clearly distinct from main content ── */
+section[data-testid="stSidebar"] { min-width: 290px !important; max-width: 340px !important; }
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #111111 0%, #0d0d0d 100%) !important;
+    border-right: 2px solid #252525 !important;
+    box-shadow: 6px 0 30px rgba(0,0,0,0.6) !important;
+}
 [data-testid="stSidebar"] * { color: #d8d8d8 !important; }
 
-/* Nav links styling */
+/* ── Nav links: larger, clearly interactive, with hover/active states ── */
 [data-testid="stSidebarNavLink"] {
     border-radius: 8px !important;
-    margin: 2px 0 !important;
-    font-weight: 500 !important;
-    font-size: 0.9rem !important;
+    margin: 3px 6px !important;
+    padding: 11px 16px !important;
+    font-weight: 600 !important;
+    font-size: 1.0rem !important;
+    letter-spacing: 0.2px !important;
+    transition: all 0.18s ease !important;
+    border-left: 3px solid transparent !important;
+}
+[data-testid="stSidebarNavLink"]:hover {
+    background: rgba(229,9,20,0.1) !important;
+    border-left: 3px solid rgba(229,9,20,0.45) !important;
+    padding-left: 20px !important;
 }
 [data-testid="stSidebarNavLink"][aria-selected="true"] {
-    background: rgba(229,9,20,0.15) !important;
-    border-left: 3px solid #e50914 !important;
+    background: rgba(229,9,20,0.18) !important;
+    border-left: 4px solid #e50914 !important;
     color: #fff !important;
+    padding-left: 20px !important;
 }
 
 h1, h2, h3 { font-family: 'Cinzel', serif !important; letter-spacing: 1px; }
@@ -162,6 +178,31 @@ hr { border-color: #181818 !important; margin: 8px 0 !important; }
 ::-webkit-scrollbar-track { background: #0a0a0a; }
 ::-webkit-scrollbar-thumb { background: #282828; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #e50914; }
+
+/* ── Home page clickable nav cards ── */
+.home-nav-card { transition: background 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease !important; }
+a:hover .home-nav-card {
+    background: #181818 !important;
+    transform: translateY(-3px);
+    box-shadow: 0 14px 40px rgba(0,0,0,0.55) !important;
+}
+
+/* ── Compact sidebar filter controls (browse page) ── */
+[data-testid="stSidebar"] .stSlider,
+[data-testid="stSidebar"] .stMultiSelect,
+[data-testid="stSidebar"] .stSelectbox,
+[data-testid="stSidebar"] .stTextInput { margin-bottom: 2px !important; }
+[data-testid="stSidebar"] .stSlider label,
+[data-testid="stSidebar"] .stMultiSelect label,
+[data-testid="stSidebar"] .stSelectbox label,
+[data-testid="stSidebar"] .stTextInput label {
+    font-size: 0.72rem !important;
+    color: #666 !important;
+    margin-bottom: 0 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.4px !important;
+}
+[data-testid="stSidebar"] [data-testid="stSlider"] { padding-bottom: 4px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -207,6 +248,19 @@ def small_poster_html(mid: int) -> str:
         f'background:linear-gradient(160deg,{c1},{c2});display:flex;align-items:center;'
         f'justify-content:center;font-size:1.8rem;box-shadow:0 4px 14px rgba(0,0,0,0.7)">🎬</div>'
     )
+
+def poster_card_html(poster_url: str, mid: int, display_title: str, year) -> str:
+    """Poster with fixed 2:3 aspect ratio so real images and placeholders stay aligned."""
+    if poster_url and str(poster_url).strip() not in ("", "N/A"):
+        safe_url = str(poster_url).replace('"', '%22')
+        return (
+            f'<div style="width:100%;padding-bottom:150%;position:relative;'
+            f'border-radius:10px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,0.8)">'
+            f'<img src="{safe_url}" style="position:absolute;top:0;left:0;'
+            f'width:100%;height:100%;object-fit:cover;" loading="lazy" />'
+            f'</div>'
+        )
+    return poster_placeholder(mid, display_title, year)
 
 
 # ── OMDB integration ──────────────────────────────────────────────────────────
@@ -340,6 +394,13 @@ def load_catalog() -> pd.DataFrame:
     else:
         df["mean_rating"] = np.nan
         df["count"] = np.nan
+    
+    # Merge poster mapping if available
+    if POSTER_MAPPING_PATH.exists():
+        posters = pd.read_csv(POSTER_MAPPING_PATH)[["movieId", "poster_url"]].drop_duplicates("movieId")
+        df = df.merge(posters, on="movieId", how="left")
+    else:
+        df["poster_url"] = ""
 
     # Merge pre-fetched poster URLs if available
     if POSTERS_PATH.exists():
@@ -383,6 +444,101 @@ def get_recommendations(top_k: int, min_rating: float) -> pd.DataFrame | None:
     }).reset_index(drop=True)
 
 
+@st.cache_data
+def count_eligible_users(
+    ratings_path_str: str,
+    leave_k: int,
+    min_train_ratings: int,
+    min_relevant_test: int,
+    relevance_threshold: float,
+) -> tuple[int, int, int]:
+    """Returns (eligible_users, users_with_enough_history, total_users)."""
+    rp = Path(ratings_path_str)
+    if not rp.exists():
+        return 0, 0, 0
+    ratings = pd.read_csv(rp)
+    if not {"userId", "movieId", "rating", "timestamp"}.issubset(ratings.columns):
+        return 0, 0, 0
+    ratings = ratings.sort_values(["userId", "timestamp"])
+    total = 0
+    enough_history = 0
+    eligible = 0
+    for _, user_hist in ratings.groupby("userId", sort=False):
+        total += 1
+        if len(user_hist) < (leave_k + min_train_ratings):
+            continue
+        enough_history += 1
+        test = user_hist.iloc[-leave_k:]
+        if (test["rating"] >= relevance_threshold).sum() >= min_relevant_test:
+            eligible += 1
+    return eligible, enough_history, total
+
+
+@st.cache_data(show_spinner=False)
+def run_sensitivity_analysis(
+    ratings_path_str: str,
+    embeddings_path_str: str,
+    vary_param: str,
+    base_top_k: int,
+    base_leave_k: int,
+    base_min_train: int,
+    base_min_rel: int,
+    base_threshold: float,
+    base_max_windows: int,
+) -> pd.DataFrame:
+    """Run evaluation across a range of one parameter, holding others fixed.
+
+    For leave_k sweeps, min_train_ratings and min_relevant_test both scale with K so
+    that the user-count curve is driven purely by the history requirement, not by the
+    easier-to-satisfy relevance filter at larger K.
+    """
+    _param_ranges: dict[str, list] = {
+        "top_k":               list(range(5, 51)),           # 5–50, step 1
+        "leave_k":             list(range(1, 21)),           # 1–20, step 1
+        "min_relevant_test":   list(range(1, min(base_leave_k + 1, 11))),  # step 1
+        "relevance_threshold": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+    }
+    vals = _param_ranges.get(vary_param, [])
+    rows = []
+    from evaluation.evaluate import evaluate_temporal_leave_k_out
+    for val in vals:
+        kwargs: dict = dict(
+            ratings_path=ratings_path_str,
+            embeddings_path=embeddings_path_str,
+            top_k=base_top_k,
+            leave_k=base_leave_k,
+            min_train_ratings=base_min_train,
+            min_relevant_test=base_min_rel,
+            relevance_threshold=base_threshold,
+            max_windows=base_max_windows,
+        )
+        kwargs[vary_param] = val
+        if vary_param == "leave_k":
+            # Scale min_train and min_rel proportionally with K so the user-count
+            # curve reflects the stricter history requirement, not the easier
+            # min_relevant_test filter (which grows easier to satisfy as K increases).
+            kwargs["min_train_ratings"] = max(10, int(val) + 10)
+            prop_min_rel = max(1, round(base_min_rel / base_leave_k * int(val)))
+            kwargs["min_relevant_test"] = min(prop_min_rel, int(val))
+        try:
+            s, _ = evaluate_temporal_leave_k_out(**kwargs)
+            rows.append({
+                vary_param:                 val,
+                "Precision@K":              s.get("precision_at_k", 0),
+                "NDCG@K (Binary)":          s.get("ndcg_at_k", 0),
+                "Graded NDCG@K":            s.get("graded_ndcg_at_k", 0),
+                "Hit Rate@K":               s.get("hit_rate_at_k", 0),
+                "Pairwise Rank Acc":        s.get("pairwise_rank_acc_at_k", 0),
+                "Dislike Rate@K":           s.get("dislike_rate_at_k", 0),
+                "Users Evaluated":          s.get("users_evaluated", 0),
+            })
+        except Exception:
+            pass
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).set_index(vary_param)
+
+
 # ── Session state init ────────────────────────────────────────────────────────
 
 _defaults = {
@@ -406,6 +562,101 @@ n_rated    = len(st.session_state.ratings)
 n_liked    = sum(1 for v in st.session_state.ratings.values() if v["rating"] >= 4.0)
 has_genres = catalog["genres"].notna().any() and catalog["genres"].ne("").any()
 has_stats  = not catalog["mean_rating"].isna().all()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE: HOME (Landing)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def page_home():
+    # Hero
+    st.markdown(
+        '<div style="text-align:center;padding:56px 0 36px">'
+        '<div style="font-size:4.5rem;line-height:1;margin-bottom:14px">🎬</div>'
+        '<div style="font-family:Cinzel,serif;font-size:3.2rem;font-weight:900;'
+        'color:#f0f0f0;letter-spacing:8px;line-height:1">CINE'
+        '<span style="color:#e50914">MATCH</span></div>'
+        '<div style="font-family:Cinzel,serif;color:#f5c518;letter-spacing:10px;'
+        'font-size:0.72rem;margin:10px 0 28px;text-transform:uppercase">Film Discovery Engine</div>'
+        '<div style="max-width:580px;margin:0 auto">'
+        '<p style="color:#666;font-size:1.05rem;line-height:1.85;margin:0">'
+        'Your AI-powered cinema companion. Rate films you\'ve seen and CineMatch '
+        'learns your taste to surface hidden gems you\'ll love — no sign-up required.'
+        '</p></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Feature cards — the entire block is the clickable link
+    _features = [
+        ("🎬", "Browse",   "Explore 9,000+ films. Filter by genre, decade, year, and rating.", "#e50914", "/browse"),
+        ("⭐", "Rate",     "Rate movies you've watched to build your personal taste profile.",  "#f5c518", "/my-ratings"),
+        ("🎯", "For You",  "Get AI-curated picks based on your ratings — powered by embeddings.", "#1a6eb5", "/for-you"),
+        ("📊", "Evaluate", "See precision, recall, NDCG and more from our rigorous evaluation.", "#1a7a40", "/evaluation"),
+    ]
+    cols = st.columns(4, gap="medium")
+    for col, (icon, title, desc, color, url) in zip(cols, _features):
+        with col:
+            st.markdown(
+                f'<a href="{url}" target="_self" style="text-decoration:none;display:block">'
+                f'<div class="home-nav-card" style="background:#111;border:1px solid #1e1e1e;'
+                f'border-top:3px solid {color};border-radius:12px;padding:26px 18px;'
+                f'text-align:center;min-height:185px;cursor:pointer">'
+                f'<div style="font-size:2rem;margin-bottom:12px">{icon}</div>'
+                f'<div style="font-family:Cinzel,serif;color:#f0f0f0;font-size:0.88rem;'
+                f'font-weight:700;letter-spacing:2px;margin-bottom:10px">{title}</div>'
+                f'<p style="color:#555;font-size:0.78rem;line-height:1.55;margin:0">{desc}</p>'
+                f'</div></a>',
+                unsafe_allow_html=True,
+            )
+
+    # How it works strip
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(film_strip("HOW IT WORKS"), unsafe_allow_html=True)
+
+    _steps = [
+        ("01", "Browse & Rate",        "Open Browse. Find films you've seen and rate them 0.5–5 stars."),
+        ("02", "Build Your Profile",   "Rate 5+ films at 4 ★ or higher — CineMatch learns what you love."),
+        ("03", "Get Recommendations",  "Head to For You and hit Get My Recommendations for your AI-curated list."),
+        ("04", "Explore the Science",  "Curious how accurate it is? Check Evaluation for precision, recall & more."),
+    ]
+    cols2 = st.columns(4, gap="medium")
+    for col, (num, title, desc) in zip(cols2, _steps):
+        with col:
+            st.markdown(
+                f'<div style="background:#0f0f0f;border:1px solid #181818;border-radius:10px;'
+                f'padding:22px 16px;min-height:155px">'
+                f'<div style="font-family:Cinzel,serif;font-size:2.2rem;font-weight:900;'
+                f'color:#e50914;margin-bottom:10px;line-height:1">{num}</div>'
+                f'<div style="font-weight:600;color:#f0f0f0;font-size:0.88rem;margin-bottom:8px">{title}</div>'
+                f'<p style="color:#4a4a4a;font-size:0.77rem;line-height:1.55;margin:0">{desc}</p>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # Navigation hint
+    st.markdown(
+        '<div style="text-align:center;padding:40px 0 24px">'
+        '<div style="background:#111;border:1px solid #1e1e1e;border-radius:14px;'
+        'padding:28px 32px;max-width:520px;margin:0 auto">'
+        '<div style="font-family:Cinzel,serif;color:#f5c518;letter-spacing:4px;'
+        'font-size:0.7rem;margin-bottom:14px;text-transform:uppercase">Getting Started</div>'
+        '<p style="color:#777;font-size:0.88rem;line-height:1.8;margin:0">'
+        'Use the <b style="color:#f0f0f0">sidebar on the left ←</b> to switch between sections.<br>'
+        'New here? Start with <b style="color:#e50914">Browse</b> to find and rate your first films.'
+        '</p></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Catalog stats footer
+    st.markdown(
+        f'<div style="text-align:center;padding:8px 0 40px">'
+        f'<span style="color:#252525;font-size:0.78rem">'
+        f'{len(catalog):,} films in catalog &nbsp;·&nbsp; '
+        f'Semantic embeddings via sentence-transformers &nbsp;·&nbsp; '
+        f'Contrastive fine-tuning on real user ratings'
+        f'</span></div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -497,6 +748,12 @@ def page_browse():
         col_s, asc_s = sort_map[sort_by]
         flt = flt.sort_values(col_s, ascending=asc_s, na_position="last")
 
+    # Stable-sort: movies with a local poster bubble to the front within each page
+    _has_poster = flt["poster_url"].notna() & flt["poster_url"].ne("")
+    flt = flt.assign(_has_poster=_has_poster).sort_values(
+        "_has_poster", ascending=False, kind="stable"
+    ).drop(columns=["_has_poster"])
+
     # Reset pagination when filters change
     fk = (search, tuple(selected_decades), year_range, tuple(selected_genres),
           min_avg_rating, director_filter, sort_by)
@@ -533,6 +790,7 @@ def page_browse():
             avg_r = mv.get("mean_rating")
             cnt   = mv.get("count")
 
+            
             tmdb_id = mv.get("tmdbId")
             omdb = fetch_movie_meta(dtitle, year, tmdb_id)
 
@@ -545,12 +803,14 @@ def page_browse():
             cur_r   = st.session_state.ratings[mid]["rating"] if already else None
 
             with col:
-                poster_url = (omdb or {}).get("poster", "")
-                if poster_url and poster_url not in ("", "N/A"):
-                    st.image(poster_url, use_container_width=True)
-                else:
-                    st.markdown(poster_placeholder(mid, dtitle, year),
-                                unsafe_allow_html=True)
+                local_poster_url = mv.get("poster_url", "")
+                poster_url = (
+                    local_poster_url
+                    if pd.notna(local_poster_url) and str(local_poster_url).strip()
+                    else (omdb or {}).get("poster", "")
+                )
+                st.markdown(poster_card_html(poster_url, mid, dtitle, year),
+                            unsafe_allow_html=True)
 
                 # Title
                 st.markdown(
@@ -722,12 +982,19 @@ def page_my_ratings():
         director = item.get("director","")
 
         tmdb_id = item.get("tmdbId")
-        poster_url = item.get("poster_url", "")
-        if not poster_url or str(poster_url) in ("", "nan", "N/A"):
-            omdb = fetch_movie_meta(dtitle, year, tmdb_id)
-            poster_url = (omdb or {}).get("poster", "")
-        else:
-            omdb = None
+        omdb = fetch_movie_meta(dtitle, year, tmdb_id)
+        catalog_row = catalog[catalog["movieId"] == mid]
+        local_poster_url = (
+            catalog_row["poster_url"].iloc[0]
+            if not catalog_row.empty and "poster_url" in catalog_row.columns
+            else ""
+        )
+        
+        poster_url = (
+            local_poster_url
+            if pd.notna(local_poster_url) and str(local_poster_url).strip()
+            else (omdb or {}).get("poster", "")
+        )
 
         col_img, col_info, col_r, col_act = st.columns([1, 5, 2, 1])
 
@@ -852,10 +1119,10 @@ def page_for_you():
                     unsafe_allow_html=True,
                 )
                 mc1, mc2, mc3, mc4 = st.columns(4)
-                mc1.metric("Precision@10",  f'{ev.get("precision_at_k", 0):.3f}')
-                mc2.metric("Recall@10",     f'{ev.get("recall_at_k", 0):.3f}')
-                mc3.metric("NDCG@10",       f'{ev.get("ndcg_at_k", 0):.3f}')
-                mc4.metric("Hit Rate@10",   f'{ev.get("hit_rate_at_k", 0):.3f}')
+                mc1.metric("Precision@K",      f'{ev.get("precision_at_k", 0):.3f}')
+                mc2.metric("Graded NDCG@K",    f'{ev.get("graded_ndcg_at_k", 0):.3f}')
+                mc3.metric("Hit Rate@K",       f'{ev.get("hit_rate_at_k", 0):.3f}')
+                mc4.metric("Pair Rank Acc",    f'{ev.get("pairwise_rank_acc_at_k", 0):.3f}')
         except Exception:
             pass
 
@@ -886,8 +1153,18 @@ def page_for_you():
         pct    = max(0.0, min(100.0, score * 100))
         catalog_row = catalog[catalog["movieId"] == mid]
         tmdb_id = catalog_row["tmdbId"].iloc[0] if not catalog_row.empty else None
-        omdb    = fetch_movie_meta(dtitle, None, tmdb_id)
-        poster_url = (omdb or {}).get("poster", "")
+        omdb = fetch_movie_meta(dtitle, None, tmdb_id)
+        
+        local_poster_url = (
+            catalog_row["poster_url"].iloc[0]
+            if not catalog_row.empty and "poster_url" in catalog_row.columns
+            else ""
+        )
+        poster_url = (
+            local_poster_url
+            if pd.notna(local_poster_url) and str(local_poster_url).strip()
+            else (omdb or {}).get("poster", "")
+        )
 
         col_img, col_info, col_score = st.columns([1, 5, 2])
 
@@ -961,8 +1238,49 @@ def page_for_you():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def page_evaluation():
+    # Load stored results first so sidebar sliders can default to the params used last time.
+    if EVAL_RESULTS_PATH.exists():
+        try:
+            ev = json.loads(EVAL_RESULTS_PATH.read_text())
+        except Exception:
+            ev = {}
+    else:
+        ev = {}
+
     with st.sidebar:
-        st.markdown("**Options**")
+        st.markdown("**Evaluation Parameters**")
+        eval_top_k = st.slider(
+            "N — recommendations shown",
+            min_value=5, max_value=100,
+            value=int(ev.get("top_k", 50)), step=5,
+            help="How many top recommendations to score against the held-out set.",
+        )
+        eval_leave_k = st.slider(
+            "K — movies held out per user",
+            min_value=1, max_value=20,
+            value=int(ev.get("leave_k", 5)), step=1,
+            help="Number of each user's most recent ratings hidden as the test set.",
+        )
+        eval_min_train = max(10, eval_leave_k + 10)
+        st.caption(f"Min training ratings: **{eval_min_train}** (auto: max(10, K+10))")
+        # max(10, K+5) always exceeds K for any K ≤ 20, so this is capped to K —
+        # meaning all held-out movies must be liked for a user to be included.
+        eval_min_rel = 1
+        st.caption(f"Min liked in held-out: **{eval_min_rel}** (users qualify if they liked ≥ 1 of their {eval_leave_k} held-out movies)")
+        eval_relevance_threshold = st.select_slider(
+            "Liked = rating ≥",
+            options=[2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+            value=float(ev.get("relevance_threshold", 3.5)),
+            help="Minimum rating for a movie to count as 'liked' in the held-out test set.",
+        )
+        eval_max_windows = st.slider(
+            "Max windows per user",
+            min_value=1, max_value=10,
+            value=int(ev.get("max_windows", 3)), step=1,
+            help="How many sliding K-movie windows to evaluate per user. "
+                 "More windows = more signal per user but longer runtime.",
+        )
+        st.markdown("---")
         if st.button("Re-run Evaluation", use_container_width=True,
                      help="Re-runs the full temporal leave-k-out evaluation. May take a minute."):
             with st.spinner("Running evaluation…"):
@@ -971,6 +1289,12 @@ def page_evaluation():
                     summary, _ = evaluate_temporal_leave_k_out(
                         ratings_path=str(PROJECT_ROOT / "data" / "processed" / "ratings_clean.csv"),
                         embeddings_path=str(EMBEDDINGS_PATH),
+                        top_k=eval_top_k,
+                        leave_k=eval_leave_k,
+                        min_train_ratings=eval_min_train,
+                        min_relevant_test=eval_min_rel,
+                        relevance_threshold=eval_relevance_threshold,
+                        max_windows=eval_max_windows,
                     )
                     EVAL_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
                     EVAL_RESULTS_PATH.write_text(json.dumps(summary, indent=2))
@@ -987,70 +1311,41 @@ def page_evaluation():
         unsafe_allow_html=True,
     )
 
+    # ── Stale-params warning ───────────────────────────────────────────────────
+    params_changed = ev and (
+        eval_top_k != int(ev.get("top_k", eval_top_k))
+        or eval_leave_k != int(ev.get("leave_k", eval_leave_k))
+        or eval_relevance_threshold != float(ev.get("relevance_threshold", eval_relevance_threshold))
+        or eval_max_windows != int(ev.get("max_windows", eval_max_windows))
+    )
+    if params_changed:
+        st.warning(
+            f"Showing cached results (N={ev.get('top_k')}, K={ev.get('leave_k')}, "
+            f"liked≥{ev.get('relevance_threshold', 3.5)}★). "
+            f"Hit **Re-run Evaluation** to apply your new settings."
+        )
+
     # ── How the evaluation works ───────────────────────────────────────────────
+    stored_leave_k = ev.get("leave_k", eval_leave_k)
+    stored_top_k   = ev.get("top_k",   eval_top_k)
     st.markdown(
         '<div style="background:#111;border:1px solid #1e1e1e;border-left:4px solid #e50914;'
         'border-radius:8px;padding:18px 20px;margin-bottom:28px">'
         '<div style="font-family:Cinzel,serif;font-size:0.75rem;color:#e50914;letter-spacing:2px;'
         'margin-bottom:8px">HOW WE EVALUATE</div>'
         '<p style="color:#ccc;font-size:0.88rem;line-height:1.7;margin:0">'
-        '<b>Temporal leave-k-out</b> — for each user in the dataset, we hide their '
-        '<b>5 most recent</b> movie interactions and ask the model: given this user\'s '
-        'earlier watch history, what would you recommend? We then check how many of the '
-        'hidden movies appear in the top-10 recommendations. This mimics real-world usage — '
-        'the model only sees past behaviour and must predict future taste.'
+        f'<b>Sliding-window leave-k-out</b> — for each user we slide a window of '
+        f'<b>K={stored_leave_k}</b> movies backwards through their rating history, '
+        f'creating up to <b>{ev.get("max_windows", 3)}</b> non-overlapping train/test splits. '
+        f'Each split uses everything before the window as training. '
+        f'Metrics are averaged across windows per user, then across users. '
+        f'A hidden movie is a <b>hit</b> only if the user liked it (rating ≥ threshold). '
+        f'<b>Precision</b> = liked hits ÷ liked held-out (e.g. user liked 4 of {stored_leave_k} held-out, '
+        f'we recommended 3 → 3/4). '
+        '<b>Graded NDCG</b> uses actual ratings as gains, rewarding higher-ranked beloved films more.'
         '</p></div>',
         unsafe_allow_html=True,
     )
-
-    # ── Metric explanations ────────────────────────────────────────────────────
-    METRICS = [
-        {
-            "key":   "precision_at_k",
-            "label": "Precision@10",
-            "icon":  "🎯",
-            "color": "#e50914",
-            "what":  "Of the 10 movies recommended, how many did the user actually like?",
-            "good":  "Higher = fewer irrelevant recommendations in the top 10.",
-            "range": "0 → 1. A score of 0.10 means 1 in 10 recommended movies is relevant.",
-        },
-        {
-            "key":   "recall_at_k",
-            "label": "Recall@10",
-            "icon":  "📡",
-            "color": "#1a6eb5",
-            "what":  "Of all the movies the user would enjoy, how many made it into the top 10?",
-            "good":  "Higher = the model misses fewer movies the user would have loved.",
-            "range": "0 → 1. Hard to max out — a user may love 50 films but only 10 are shown.",
-        },
-        {
-            "key":   "ndcg_at_k",
-            "label": "NDCG@10",
-            "icon":  "📈",
-            "color": "#c9a227",
-            "what":  "Are relevant movies near the top of the list? NDCG rewards ranking quality — "
-                     "a liked movie at position 1 scores more than the same movie at position 9.",
-            "good":  "Higher = relevant movies ranked first, not buried at the bottom.",
-            "range": "0 → 1. Normalised against the ideal ranking for that user.",
-        },
-        {
-            "key":   "hit_rate_at_k",
-            "label": "Hit Rate@10",
-            "icon":  "✅",
-            "color": "#1a7a40",
-            "what":  "What fraction of users received at least one relevant movie in their top 10?",
-            "good":  "Higher = more users get at least one good recommendation (nobody is left out).",
-            "range": "0 → 1. The most lenient metric — even one hit counts as a success.",
-        },
-    ]
-
-    if EVAL_RESULTS_PATH.exists():
-        try:
-            ev = json.loads(EVAL_RESULTS_PATH.read_text())
-        except Exception:
-            ev = {}
-    else:
-        ev = {}
 
     if not ev:
         st.info(
@@ -1058,11 +1353,105 @@ def page_evaluation():
             "(requires processed data and embeddings to exist)."
         )
 
+    # ── Metric explanations ────────────────────────────────────────────────────
+    k = ev.get("top_k", 10)
+    _dk = ev.get("dislike_threshold", 2.5)
+    _lk = ev.get("leave_k", 5)
+    METRICS = [
+        {
+            "key":   "precision_at_k",
+            "label": "Precision (Liked Caught / Liked Held-Out)",
+            "icon":  "🎯",
+            "color": "#e50914",
+            "what":  f"K = {_lk} movies are held out per user. Of those, however many the user liked "
+                     f"(rated ≥ threshold) form the denominator. Precision = liked hits ÷ liked held-out. "
+                     f"Example: user has 4 liked movies among their {_lk} held-out; we recommended 3 of them → 3/4 = 0.75.",
+            "good":  "Higher = we recommended a larger share of the movies the user actually liked in their held-out set.",
+            "range": "0 → 1. Denominator varies per user (their liked held-out count, not K).",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "ndcg_at_k",
+            "label": f"NDCG@{k} (Binary)",
+            "icon":  "📈",
+            "color": "#c9a227",
+            "what":  f"Are liked movies near the top of the list? A liked hit at rank 1 scores more "
+                     f"than the same hit at rank {k}. Only verifiable positions (test-set movies) are scored.",
+            "good":  "Higher = liked movies ranked first, not buried at the bottom.",
+            "range": "0 → 1. Normalised against the ideal ranking for that user.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "graded_ndcg_at_k",
+            "label": f"Graded NDCG@{k} (Rating-Weighted)",
+            "icon":  "🌡️",
+            "color": "#c9a227",
+            "what":  f"Like NDCG, but gain is the actual rating (0–5) ÷ 5 instead of binary 0/1. "
+                     f"A rec of a 5★ film scores twice as much as a 2.5★ one at the same rank. "
+                     f"Gives partial credit and is more lenient toward near-liked recommendations.",
+            "good":  "Higher = highly-rated held-out movies appear early in the list.",
+            "range": "0 → 1. Will generally be higher than binary NDCG for the same model.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "hit_rate_at_k",
+            "label": f"Hit Rate@{k}",
+            "icon":  "✅",
+            "color": "#1a7a40",
+            "what":  f"What fraction of users received at least one liked movie in their top {k}?",
+            "good":  "Higher = more users get at least one good recommendation.",
+            "range": "0 → 1. Lenient metric — even one hit per user counts as success.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "pairwise_rank_acc_at_k",
+            "label": "Pairwise Ranking Accuracy",
+            "icon":  "⚖️",
+            "color": "#7b2fbe",
+            "what":  "For every pair of liked held-out movies (A rated higher than B), "
+                     "what fraction does the model rank A above B? "
+                     "Movies not in the top-N are treated as ranked last. "
+                     "Computed only over users with ≥ 2 liked held-out movies at different ratings.",
+            "good":  "Higher = the model's ordering within liked movies matches the user's preference strength.",
+            "range": "0 → 1. 0.5 = random ordering; 1.0 = perfect preference-consistent ranking.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "dislike_rate_at_k",
+            "label": f"Dislike Rate@{k}",
+            "icon":  "👎",
+            "color": "#c45e0a",
+            "what":  f"Of the recommended movies the user actually watched (verified in test set), "
+                     f"what fraction did they actively dislike (rated ≤ {_dk}★)?",
+            "good":  "Lower = fewer bad recommendations that the user watched and disliked.",
+            "range": "0 → 1. 0 means none of the verified recommendations were disliked.",
+            "fmt":   "0-1",
+        },
+        {
+            "key":   "coverage_pct_at_k",
+            "label": "Catalog Coverage",
+            "icon":  "🗺️",
+            "color": "#0a7a70",
+            "what":  "Percentage of the full movie catalog that gets recommended to at least one user.",
+            "good":  "Higher = more diverse recommendations; low coverage suggests popularity bias.",
+            "range": "0 → 100%. A high score means the model explores beyond the same blockbusters.",
+            "fmt":   "pct",
+        },
+    ]
+
     # ── Metric cards ──────────────────────────────────────────────────────────
     for m in METRICS:
-        val   = ev.get(m["key"], None)
-        bar_w = int(val * 100) if val is not None else 0
-        val_s = f"{val:.4f}" if val is not None else "—"
+        val = ev.get(m["key"], None)
+        if val is None:
+            continue
+        if m["fmt"] == "pct":
+            bar_w = min(100, max(0, int(val)))
+            val_s = f"{val:.2f}%"
+        else:
+            # For dislike_rate, lower is better — invert the bar fill direction
+            raw_w = min(100, max(0, int(val * 100)))
+            bar_w = (100 - raw_w) if m["key"] == "dislike_rate_at_k" else raw_w
+            val_s = f"{val:.4f}"
 
         st.markdown(
             f'<div style="background:#111;border:1px solid #1e1e1e;border-radius:10px;'
@@ -1084,9 +1473,18 @@ def page_evaluation():
             f'<p style="color:#ccc;font-size:0.83rem;margin:0 0 6px"><b>What it measures:</b> {m["what"]}</p>'
             f'<p style="color:#888;font-size:0.8rem;margin:0 0 4px">{m["good"]}</p>'
             f'<p style="color:#555;font-size:0.75rem;margin:0"><i>Range: {m["range"]}</i></p>'
+            + (
+                f'<p style="color:#333;font-size:0.72rem;margin-top:6px">'
+                f'Averaged over {ev.get("pairwise_rank_acc_users", "?")} users '
+                f'(those with ≥ 2 liked held-out movies at different ratings).</p>'
+                if m["key"] == "pairwise_rank_acc_at_k" else ""
+            ) +
             f'</div>',
             unsafe_allow_html=True,
         )
+
+    if ev and "coverage_pct_at_k" not in ev:
+        st.info("Catalog Coverage requires a fresh evaluation run — click **Re-run Evaluation**.")
 
     # ── Summary stats ─────────────────────────────────────────────────────────
     if ev:
@@ -1095,10 +1493,133 @@ def page_evaluation():
             '<p style="color:#444;font-size:0.82rem">Evaluation dataset:</p>',
             unsafe_allow_html=True,
         )
-        sc1, sc2, sc3 = st.columns(3)
-        sc1.metric("Users evaluated", ev.get("users_evaluated", "—"))
-        sc2.metric("Total users",     ev.get("users_total", "—"))
-        sc3.metric("Leave-k",         ev.get("leave_k", "—"))
+        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+        sc1.metric("Users evaluated",    ev.get("users_evaluated", "—"))
+        sc2.metric("Total users",        ev.get("users_total", "—"))
+        sc3.metric("K (held out)",       ev.get("leave_k", "—"))
+        sc4.metric("Max windows",        ev.get("max_windows", "—"))
+        sc5.metric("Avg windows / user", f'{ev.get("avg_windows_per_user", 0):.1f}')
+
+    # ── Live user count preview ────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        '<div style="font-family:Cinzel,serif;font-size:0.75rem;color:#e50914;'
+        'letter-spacing:2px;margin-bottom:12px">CURRENT PARAMETER PREVIEW</div>',
+        unsafe_allow_html=True,
+    )
+    ratings_csv = str(PROJECT_ROOT / "data" / "processed" / "ratings_clean.csv")
+    if Path(ratings_csv).exists():
+        with st.spinner("Counting eligible users…"):
+            eligible, enough_hist, total_u = count_eligible_users(
+                ratings_csv,
+                leave_k=eval_leave_k,
+                min_train_ratings=eval_min_train,
+                min_relevant_test=eval_min_rel,
+                relevance_threshold=eval_relevance_threshold,
+            )
+        pc1, pc2, pc3 = st.columns(3)
+        pc1.metric("Total users", f"{total_u:,}")
+        pc2.metric(f"Have ≥{eval_leave_k + 5} ratings", f"{enough_hist:,}",
+                   help=f"Users with enough history to leave {eval_leave_k} out and still have 5 training ratings.")
+        pc3.metric(
+            f"Eligible (≥{eval_min_rel} liked in test)",
+            f"{eligible:,}",
+            delta=f"{eligible/total_u*100:.1f}% of all" if total_u else None,
+            help=f"Users whose held-out set contains ≥{eval_min_rel} movie(s) rated ≥{eval_relevance_threshold}★.",
+        )
+        st.markdown(
+            f'<p style="color:#333;font-size:0.75rem;margin-top:4px">'
+            f'With these settings: N={eval_top_k}, K={eval_leave_k}, '
+            f'min_liked_in_test={eval_min_rel}, liked≥{eval_relevance_threshold}★ — '
+            f'<b style="color:#888">{eligible:,}</b> users would be included in the evaluation.'
+            f'</p>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.info("Ratings file not found — run the data pipeline first to see user counts.")
+
+    # ── Sensitivity Analysis ───────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        '<div style="font-family:Cinzel,serif;font-size:0.75rem;color:#e50914;'
+        'letter-spacing:2px;margin-bottom:12px">SENSITIVITY ANALYSIS</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<p style="color:#555;font-size:0.82rem;margin-bottom:16px">'
+        'Vary one parameter across a range while holding the others fixed at your '
+        'current sidebar values. Results are cached — re-running the same config is instant.</p>',
+        unsafe_allow_html=True,
+    )
+
+    _param_labels = {
+        "leave_k":             "K — movies held out",
+        "relevance_threshold": "Liked threshold (rating ≥)",
+    }
+    sa_col1, sa_col2 = st.columns([3, 1])
+    with sa_col1:
+        vary_param = st.selectbox(
+            "Parameter to vary",
+            options=list(_param_labels.keys()),
+            format_func=lambda x: _param_labels[x],
+            label_visibility="collapsed",
+        )
+    with sa_col2:
+        run_sa = st.button("Run Analysis", use_container_width=True, key="run_sensitivity")
+
+    if run_sa:
+        _rc = str(PROJECT_ROOT / "data" / "processed" / "ratings_clean.csv")
+        if not Path(_rc).exists():
+            st.error("Ratings file not found — run the data pipeline first.")
+        elif not EMBEDDINGS_PATH.exists():
+            st.error("Embeddings not found — build them first.")
+        else:
+            with st.spinner(f"Running sensitivity sweep on '{_param_labels[vary_param]}'…"):
+                _sens_df = run_sensitivity_analysis(
+                    ratings_path_str=_rc,
+                    embeddings_path_str=str(EMBEDDINGS_PATH),
+                    vary_param=vary_param,
+                    base_top_k=eval_top_k,
+                    base_leave_k=eval_leave_k,
+                    base_min_train=eval_min_train,
+                    base_min_rel=eval_min_rel,
+                    base_threshold=eval_relevance_threshold,
+                    base_max_windows=eval_max_windows,
+                )
+            if "sensitivity_results" not in st.session_state:
+                st.session_state.sensitivity_results = {}
+            st.session_state.sensitivity_results[vary_param] = {
+                "df": _sens_df,
+                "params": dict(top_k=eval_top_k, leave_k=eval_leave_k,
+                               min_rel=eval_min_rel, threshold=eval_relevance_threshold),
+            }
+
+    _sr = st.session_state.get("sensitivity_results", {})
+    if vary_param in _sr and not _sr[vary_param]["df"].empty:
+        _entry = _sr[vary_param]
+        _df    = _entry["df"]
+        _p     = _entry["params"]
+        st.caption(
+            f"Baseline used — N={_p['top_k']}, K={_p['leave_k']}, "
+            f"min_liked={_p['min_rel']}, liked≥{_p['threshold']}★"
+        )
+        _metric_cols = [c for c in _df.columns if c != "Users Evaluated"]
+        st.markdown("**Metric scores vs parameter value:**")
+        st.line_chart(_df[_metric_cols], height=320)
+        st.markdown("**Users included in each run:**")
+        st.line_chart(_df[["Users Evaluated"]], height=180)
+        with st.expander("Raw numbers"):
+            st.dataframe(_df.reset_index().style.format(
+                {c: "{:.4f}" for c in _metric_cols} | {"Users Evaluated": "{:.0f}"}
+            ))
+
+
+# ── Module-level page objects (url_path must match <a href> links in page_home) ─
+_p_home       = st.Page(page_home,       title="Home",                    icon="🏠")
+_p_browse     = st.Page(page_browse,     title="Browse",                  icon="🎬", url_path="browse")
+_p_my_ratings = st.Page(page_my_ratings, title=f"My Ratings ({n_rated})", icon="⭐", url_path="my-ratings")
+_p_for_you    = st.Page(page_for_you,    title="For You",                 icon="🎯", url_path="for-you")
+_p_evaluation = st.Page(page_evaluation, title="Evaluation",              icon="📊", url_path="evaluation")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1144,10 +1665,5 @@ with st.sidebar:
 # NAVIGATION — runs the current page
 # ═══════════════════════════════════════════════════════════════════════════════
 
-pg = st.navigation([
-    st.Page(page_browse,     title="Browse",                   icon="🎬"),
-    st.Page(page_my_ratings, title=f"My Ratings ({n_rated})",  icon="⭐"),
-    st.Page(page_for_you,    title="For You",                   icon="🎯"),
-    st.Page(page_evaluation, title="Evaluation",                icon="📊"),
-])
+pg = st.navigation([_p_home, _p_browse, _p_my_ratings, _p_for_you, _p_evaluation])
 pg.run()

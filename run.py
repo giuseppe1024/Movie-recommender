@@ -89,18 +89,31 @@ def run_evaluation():
     """Run temporal leave-k-out evaluation and save summary to data/eval_results.json."""
     from evaluation.evaluate import evaluate_temporal_leave_k_out
     print(">>> Evaluating recommendation quality ...")
+    # Defaults: K=10, N=50, min_train=max(10,K+10)=20, min_rel=K=10, liked≥3.5
+    leave_k = 10
+    top_k   = 50
     try:
         summary, _ = evaluate_temporal_leave_k_out(
             ratings_path=str(PROCESSED_DIR / "ratings_clean.csv"),
             embeddings_path=str(EMBEDDINGS),
+            leave_k=leave_k,
+            top_k=top_k,
+            min_train_ratings=max(10, leave_k + 10),
+            min_relevant_test=1,
+            relevance_threshold=3.5,
+            dislike_threshold=2.5,
+            max_windows=3,
         )
         EVAL_RESULTS.parent.mkdir(parents=True, exist_ok=True)
         EVAL_RESULTS.write_text(json.dumps(summary, indent=2))
         print(f"Evaluation results saved to data/eval_results.json")
-        print(f"  Precision@10:  {summary.get('precision_at_k', 0):.4f}")
-        print(f"  Recall@10:     {summary.get('recall_at_k', 0):.4f}")
-        print(f"  NDCG@10:       {summary.get('ndcg_at_k', 0):.4f}")
-        print(f"  Hit Rate@10:   {summary.get('hit_rate_at_k', 0):.4f}\n")
+        print(f"  Users evaluated:      {summary.get('users_evaluated')} / {summary.get('users_total')}")
+        print(f"  Precision@K:          {summary.get('precision_at_k', 0):.4f}  (liked-held-out caught / liked-held-out)")
+        print(f"  Hit Rate@{top_k}:       {summary.get('hit_rate_at_k', 0):.4f}")
+        print(f"  NDCG@{top_k} (binary): {summary.get('ndcg_at_k', 0):.4f}")
+        print(f"  Graded NDCG@{top_k}:   {summary.get('graded_ndcg_at_k', 0):.4f}")
+        print(f"  Pairwise Rank Acc:    {summary.get('pairwise_rank_acc_at_k', 0):.4f}  ({summary.get('pairwise_rank_acc_users', '?')} users)")
+        print(f"  Dislike Rate@{top_k}:  {summary.get('dislike_rate_at_k', 0):.4f}\n")
     except Exception as exc:
         print(f"Evaluation skipped ({exc})\n")
 

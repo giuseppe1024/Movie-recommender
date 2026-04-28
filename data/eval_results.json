@@ -1,10 +1,20 @@
 {
   "users_total": 610,
-  "users_evaluated": 541,
-  "leave_k": 5,
-  "top_k": 10,
-  "precision_at_k": 0.023290203327171903,
-  "recall_at_k": 0.06980899568699939,
-  "hit_rate_at_k": 0.18853974121996303,
-  "ndcg_at_k": 0.04948832052893158
+  "users_evaluated": 490,
+  "leave_k": 10,
+  "top_k": 50,
+  "max_windows": 10,
+  "avg_windows_per_user": 6.03265306122449,
+  "min_relevant_test": 1,
+  "relevance_threshold": 4.0,
+  "dislike_threshold": 2.5,
+  "precision_at_k": 0.22452774307001713,
+  "hit_rate_at_k": 0.6001060900550697,
+  "ndcg_at_k": 0.2857861935734474,
+  "graded_ndcg_at_k": 0.12859883124271695,
+  "pairwise_rank_acc_at_k": 0.5724134242582758,
+  "pairwise_rank_acc_users": 428,
+  "dislike_rate_at_k": 0.038874635568513116,
+  "coverage_at_k": 0.16607289668402303,
+  "coverage_pct_at_k": 16.607289668402302
 }

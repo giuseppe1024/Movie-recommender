@@ -23,9 +23,27 @@ pip install -r requirements.txt
 ```
 
 ## Running the app
+
+The simplest way to run the full pipeline (downloads data, processes it, builds embeddings, runs evaluation, then launches the app):
+
+```bash
+python run.py
+```
+
+Each step is skipped automatically if its outputs already exist. To force a fresh evaluation, delete `data/eval_results.json` before running.
+
+To launch the app directly (if data and embeddings are already built):
+
 ```bash
 streamlit run app/main.py
 ```
+
+### Pipeline steps
+1. **Download** — fetches MovieLens ml-latest-small (~1 MB) into `data/`
+2. **Process** — cleans and splits raw data into `data/processed/`
+3. **Embeddings** — builds movie embeddings into `embeddings/`
+4. **Evaluate** — runs sliding-window leave-k-out evaluation, saves metrics to `data/eval_results.json`
+5. **Launch** — starts the Streamlit UI at `http://localhost:8501`
 
 ## Data Setup
 
