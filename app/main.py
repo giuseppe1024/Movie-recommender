@@ -23,6 +23,7 @@ STATS_PATH      = PROJECT_ROOT / "data" / "processed" / "movie_stats.csv"
 OMDB_CACHE_PATH   = PROJECT_ROOT / "data" / "omdb_cache.json"
 EVAL_RESULTS_PATH = PROJECT_ROOT / "data" / "eval_results.json"
 LINKS_PATH        = PROJECT_ROOT / "data" / "links.csv"
+POSTERS_PATH      = PROJECT_ROOT / "data" / "processed" / "poster_mapping.csv"
 
 RATING_OPTIONS = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
 PAGE_SIZE = 20
@@ -339,6 +340,13 @@ def load_catalog() -> pd.DataFrame:
     else:
         df["mean_rating"] = np.nan
         df["count"] = np.nan
+
+    # Merge pre-fetched poster URLs if available
+    if POSTERS_PATH.exists():
+        posters = pd.read_csv(POSTERS_PATH)[["movieId", "poster_url"]]
+        df = df.merge(posters, on="movieId", how="left")
+    else:
+        df["poster_url"] = np.nan
 
     return df.reset_index(drop=True)
 
@@ -714,8 +722,12 @@ def page_my_ratings():
         director = item.get("director","")
 
         tmdb_id = item.get("tmdbId")
-        omdb = fetch_movie_meta(dtitle, year, tmdb_id)
-        poster_url = (omdb or {}).get("poster","")
+        poster_url = item.get("poster_url", "")
+        if not poster_url or str(poster_url) in ("", "nan", "N/A"):
+            omdb = fetch_movie_meta(dtitle, year, tmdb_id)
+            poster_url = (omdb or {}).get("poster", "")
+        else:
+            omdb = None
 
         col_img, col_info, col_r, col_act = st.columns([1, 5, 2, 1])
 
