@@ -1,7 +1,12 @@
-# Nearest-neighbour retrieval using cosine similarity to generate recommendations.
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import normalize
+
+
+def l2_normalize_rows(matrix):
+    """Row-wise L2 normalization: divide each row by its L2 norm."""
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)  
+    return matrix / norms
 
 
 def load_embedding_table(embeddings_path="movie_embeddings.csv"):
@@ -10,7 +15,7 @@ def load_embedding_table(embeddings_path="movie_embeddings.csv"):
     emb_cols = [c for c in emb_df.columns if c.startswith("emb_")]
     emb_matrix = emb_df[emb_cols].to_numpy(dtype=np.float32)
 
-    emb_matrix = normalize(emb_matrix, norm="l2").astype(np.float32)
+    emb_matrix = l2_normalize_rows(emb_matrix).astype(np.float32)
 
     movie_ids = emb_df["movieId"].to_numpy()
     titles = emb_df["title"].to_numpy()
@@ -44,7 +49,6 @@ def build_user_query_vector(user_ratings, emb_matrix, movieid_to_idx, min_rating
     else:
         query_vec = vecs.mean(axis=0)
 
-    # Normalize so cosine similarity = dot product
     query_vec = query_vec.astype(np.float32)
     query_vec = query_vec / np.linalg.norm(query_vec)
 
@@ -54,7 +58,7 @@ def build_user_query_vector(user_ratings, emb_matrix, movieid_to_idx, min_rating
 def recommend_movies_knn(user_ratings, embeddings_path="movie_embeddings.csv",
                          min_rating=4.0, top_k=10, weighted=True):
     """
-    Returns top_k movie recommendations using cosine similarity nearest-neighbor retrieval
+    Returns top_k movie recommendations using cosine similarity nearest-neighbor retrieval.
     """
     emb_df, emb_matrix, movieid_to_idx, movie_ids, titles = load_embedding_table(embeddings_path)
 
