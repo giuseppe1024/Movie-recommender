@@ -5,7 +5,7 @@ import pandas as pd
 def l2_normalize_rows(matrix):
     """Row-wise L2 normalization: divide each row by its L2 norm."""
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1.0, norms)  
+    norms = np.where(norms == 0, 1.0, norms)
     return matrix / norms
 
 
@@ -25,49 +25,66 @@ def load_embedding_table(embeddings_path="movie_embeddings.csv"):
     return emb_df, emb_matrix, movieid_to_idx, movie_ids, titles
 
 
-def build_user_query_vector(user_ratings, emb_matrix, movieid_to_idx, min_rating=4.0,
-                            weighted=True):
+def build_user_query_vector(user_ratings, emb_matrix, movieid_to_idx):
     """
-    user_ratings: DataFrame with columns ['movieId', 'rating']
-    min_rating: only use movies rated at least this highly
-    weighted: if True, weight each movie embedding by its rating
+    Build a user query vector using centered rating weights.
+
+    weight = rating - 3.0
+
+    5-star movie -> +2.0
+    4-star movie -> +1.0
+    3-star movie ->  0.0  
+    2-star movie -> -1.0
+    1-star movie -> -2.0
+
+    If positive and negative signals cancel (zero norm), falls back to
+    liked-only (positive weights) to avoid a crash.
     """
-    liked = user_ratings[user_ratings["rating"] >= min_rating].copy()
+    rated = user_ratings.copy()
+    rated = rated[rated["movieId"].isin(movieid_to_idx)].copy()
 
-    valid_rows = liked["movieId"].isin(movieid_to_idx)
-    liked = liked[valid_rows]
+    if rated.empty:
+        raise ValueError("No rated movies found that also exist in the embedding table.")
 
-    if liked.empty:
-        raise ValueError("No highly-rated movies found that also exist in the embedding table.")
+    rated["weight"] = rated["rating"].astype(np.float32) - 3.0
+    rated = rated[rated["weight"] != 0].copy()
 
-    idxs = liked["movieId"].map(movieid_to_idx).to_numpy()
+    if rated.empty:
+        raise ValueError("No usable ratings found after centering around 3.0.")
+
+    idxs = rated["movieId"].map(movieid_to_idx).to_numpy()
     vecs = emb_matrix[idxs]
+    weights = rated["weight"].to_numpy(dtype=np.float32).reshape(-1, 1)
 
-    if weighted:
-        weights = liked["rating"].to_numpy(dtype=np.float32).reshape(-1, 1)
-        query_vec = (vecs * weights).sum(axis=0) / weights.sum()
-    else:
-        query_vec = vecs.mean(axis=0)
+    query_vec = (vecs * weights).sum(axis=0)
+    norm = np.linalg.norm(query_vec)
 
-    query_vec = query_vec.astype(np.float32)
-    query_vec = query_vec / np.linalg.norm(query_vec)
+    if norm == 0:
+        # If positive and negative signals cancelled out.
+        # Use only liked movies (positive weights) with no negative signal.
+        liked = rated[rated["weight"] > 0]
+        if liked.empty:
+            raise ValueError("Query vector is zero and no liked movies exist to fall back on.")
+        idxs = liked["movieId"].map(movieid_to_idx).to_numpy()
+        vecs = emb_matrix[idxs]
+        weights = liked["weight"].to_numpy(dtype=np.float32).reshape(-1, 1)
+        query_vec = (vecs * weights).sum(axis=0)
+        norm = np.linalg.norm(query_vec)
 
-    return query_vec, liked["movieId"].tolist()
+    query_vec = (query_vec / norm).astype(np.float32)
+    return query_vec, rated["movieId"].tolist()
 
 
-def recommend_movies_knn(user_ratings, embeddings_path="movie_embeddings.csv",
-                         min_rating=4.0, top_k=10, weighted=True):
+def recommend_movies_knn(user_ratings, embeddings_path="movie_embeddings.csv", top_k=10):
     """
     Returns top_k movie recommendations using cosine similarity nearest-neighbor retrieval.
     """
     emb_df, emb_matrix, movieid_to_idx, movie_ids, titles = load_embedding_table(embeddings_path)
 
-    query_vec, seen_high_rated = build_user_query_vector(
+    query_vec, used_rated_movies = build_user_query_vector(
         user_ratings=user_ratings,
         emb_matrix=emb_matrix,
-        movieid_to_idx=movieid_to_idx,
-        min_rating=min_rating,
-        weighted=weighted
+        movieid_to_idx=movieid_to_idx
     )
 
     sims = emb_matrix @ query_vec
