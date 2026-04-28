@@ -402,6 +402,13 @@ def load_catalog() -> pd.DataFrame:
     else:
         df["poster_url"] = ""
 
+    # Merge pre-fetched poster URLs if available
+    if POSTERS_PATH.exists():
+        posters = pd.read_csv(POSTERS_PATH)[["movieId", "poster_url"]]
+        df = df.merge(posters, on="movieId", how="left")
+    else:
+        df["poster_url"] = np.nan
+
     return df.reset_index(drop=True)
 
 @st.cache_resource
