@@ -6,3 +6,4 @@ sentence-transformers
 matplotlib
 torch
 plotly
+requests

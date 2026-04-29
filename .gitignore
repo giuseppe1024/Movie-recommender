@@ -3,5 +3,5 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
-__pycache__/
-*.pyc
+data/omdb_cache.json
+.env
