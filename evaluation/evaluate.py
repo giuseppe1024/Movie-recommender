@@ -39,16 +39,16 @@ def _recommend_with_preloaded_embeddings(
 	movieid_to_idx: dict,
 	movie_ids: np.ndarray,
 	titles: np.ndarray,
-	min_rating: float,
 	top_k: int,
 	weighted: bool,
+	rating_midpoint: float = 3.0,
 ) -> pd.DataFrame:
 	query_vec, _ = build_user_query_vector(
 		user_ratings=user_train,
 		emb_matrix=emb_matrix,
 		movieid_to_idx=movieid_to_idx,
-		min_rating=min_rating,
 		weighted=weighted,
+		rating_midpoint=rating_midpoint,
 	)
 
 	sims = emb_matrix @ query_vec
@@ -173,6 +173,14 @@ def evaluate_temporal_leave_k_out(
 	min_relevant_test: int = 1,
 	max_windows: int = 3,
 	weighted: bool = True,
+	rating_midpoint: float = 3.0,
+	# Optional pre-loaded data — when provided, skips all file I/O.
+	# Pass these from run_sensitivity_analysis to avoid re-loading on every sweep step.
+	_preloaded_ratings: "pd.DataFrame | None" = None,
+	_preloaded_emb_matrix: "np.ndarray | None" = None,
+	_preloaded_movieid_to_idx: "dict | None" = None,
+	_preloaded_movie_ids: "np.ndarray | None" = None,
+	_preloaded_titles: "np.ndarray | None" = None,
 ) -> tuple[dict, pd.DataFrame]:
 	"""Sliding-window temporal leave-k-out evaluation.
 
@@ -187,36 +195,45 @@ def evaluate_temporal_leave_k_out(
 	across users, so every user contributes equally regardless of history length.
 	"""
 
-	base_dir = PROJECT_ROOT
-	default_ratings, default_embeddings = _resolve_default_paths(base_dir)
-	ratings_path = Path(ratings_path) if ratings_path else default_ratings
-	embeddings_path = Path(embeddings_path) if embeddings_path else default_embeddings
-
-	if not ratings_path.exists():
-		raise FileNotFoundError(
-			"Could not find ratings file. Provide --ratings-path or create one of: "
-			f"{base_dir / 'data' / 'processed' / 'ratings_clean.csv'} or "
-			f"{base_dir / 'data' / 'ratings.csv'}"
-		)
-	if not embeddings_path.exists():
-		raise FileNotFoundError(
-			"Could not find embeddings file. Provide --embeddings-path or create: "
-			f"{base_dir / 'embeddings' / 'movie_embeddings.csv'}"
-		)
-
-	ratings = pd.read_csv(ratings_path)
-	required_cols = {"userId", "movieId", "rating", "timestamp"}
-	missing = required_cols.difference(ratings.columns)
-	if missing:
-		raise ValueError(
-			f"ratings file must contain columns {sorted(required_cols)}; missing {sorted(missing)}"
+	# ── Load data (or use pre-loaded data for speed) ──────────────────────────
+	if _preloaded_emb_matrix is not None:
+		emb_matrix    = _preloaded_emb_matrix
+		movieid_to_idx = _preloaded_movieid_to_idx
+		movie_ids     = _preloaded_movie_ids
+		titles        = _preloaded_titles
+	else:
+		base_dir = PROJECT_ROOT
+		default_ratings, default_embeddings = _resolve_default_paths(base_dir)
+		embeddings_path = Path(embeddings_path) if embeddings_path else default_embeddings
+		if not embeddings_path.exists():
+			raise FileNotFoundError(
+				"Could not find embeddings file. Provide --embeddings-path or create: "
+				f"{base_dir / 'embeddings' / 'movie_embeddings.csv'}"
+			)
+		_, emb_matrix, movieid_to_idx, movie_ids, titles = load_embedding_table(
+			str(embeddings_path)
 		)
 
-	ratings = ratings.sort_values(["userId", "timestamp"]).copy()
-
-	_, emb_matrix, movieid_to_idx, movie_ids, titles = load_embedding_table(
-		str(embeddings_path)
-	)
+	if _preloaded_ratings is not None:
+		ratings = _preloaded_ratings.copy()
+	else:
+		base_dir = PROJECT_ROOT
+		default_ratings, _ = _resolve_default_paths(base_dir)
+		ratings_path = Path(ratings_path) if ratings_path else default_ratings
+		if not ratings_path.exists():
+			raise FileNotFoundError(
+				"Could not find ratings file. Provide --ratings-path or create one of: "
+				f"{base_dir / 'data' / 'processed' / 'ratings_clean.csv'} or "
+				f"{base_dir / 'data' / 'ratings.csv'}"
+			)
+		ratings = pd.read_csv(ratings_path)
+		required_cols = {"userId", "movieId", "rating", "timestamp"}
+		missing = required_cols.difference(ratings.columns)
+		if missing:
+			raise ValueError(
+				f"ratings file must contain columns {sorted(required_cols)}; missing {sorted(missing)}"
+			)
+		ratings = ratings.sort_values(["userId", "timestamp"]).copy()
 
 	per_user_rows = []
 	num_users_total = 0
@@ -260,9 +277,9 @@ def evaluate_temporal_leave_k_out(
 					movieid_to_idx=movieid_to_idx,
 					movie_ids=movie_ids,
 					titles=titles,
-					min_rating=relevance_threshold,
 					top_k=top_k,
 					weighted=weighted,
+					rating_midpoint=rating_midpoint,
 				)
 			except ValueError:
 				continue  # no liked training movies for this window
@@ -327,6 +344,7 @@ def evaluate_temporal_leave_k_out(
 			"min_relevant_test": int(min_relevant_test),
 			"relevance_threshold": float(relevance_threshold),
 			"dislike_threshold": float(dislike_threshold),
+			"rating_midpoint": float(rating_midpoint),
 			"precision_at_k": 0.0,
 			"hit_rate_at_k": 0.0,
 			"ndcg_at_k": 0.0,
@@ -352,6 +370,7 @@ def evaluate_temporal_leave_k_out(
 		"min_relevant_test":      int(min_relevant_test),
 		"relevance_threshold":    float(relevance_threshold),
 		"dislike_threshold":      float(dislike_threshold),
+		"rating_midpoint":        float(rating_midpoint),
 		"precision_at_k":         float(per_user["precision_at_k"].mean()),
 		"hit_rate_at_k":          float(per_user["hit_rate_at_k"].mean()),
 		"ndcg_at_k":              float(per_user["ndcg_at_k"].mean()),

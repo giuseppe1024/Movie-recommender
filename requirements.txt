@@ -5,3 +5,4 @@ streamlit
 sentence-transformers
 matplotlib
 torch
+plotly
