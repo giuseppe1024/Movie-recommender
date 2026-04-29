@@ -25,7 +25,8 @@ def load_embedding_table(embeddings_path="movie_embeddings.csv"):
     return emb_df, emb_matrix, movieid_to_idx, movie_ids, titles
 
 
-def build_user_query_vector(user_ratings, emb_matrix, movieid_to_idx):
+def build_user_query_vector(user_ratings, emb_matrix, movieid_to_idx,
+                            weighted=True, rating_midpoint=3.0, min_rating=None):
     """
     Build a user query vector using centered rating weights.
 
@@ -46,7 +47,7 @@ def build_user_query_vector(user_ratings, emb_matrix, movieid_to_idx):
     if rated.empty:
         raise ValueError("No rated movies found that also exist in the embedding table.")
 
-    rated["weight"] = rated["rating"].astype(np.float32) - 3.0
+    rated["weight"] = rated["rating"].astype(np.float32) - rating_midpoint
     rated = rated[rated["weight"] != 0].copy()
 
     if rated.empty:
