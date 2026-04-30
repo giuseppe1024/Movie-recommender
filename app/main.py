@@ -630,7 +630,6 @@ def run_sensitivity_analysis(
                 vary_param:          val,
                 "Precision@K":       s.get("precision_at_k", 0),
                 "NDCG@K (Binary)":   s.get("ndcg_at_k", 0),
-                "Graded NDCG@K":     s.get("graded_ndcg_at_k", 0),
                 "Hit Rate@K":        s.get("hit_rate_at_k", 0),
                 "Pairwise Rank Acc": s.get("pairwise_rank_acc_at_k", 0),
                 "Dislike Rate@K":    s.get("dislike_rate_at_k", 0),
@@ -1646,11 +1645,10 @@ def page_for_you():
                     f'across {ev.get("users_evaluated", "?")} users.</p>',
                     unsafe_allow_html=True,
                 )
-                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1, mc2, mc3 = st.columns(3)
                 mc1.metric("Precision@K",   f'{ev.get("precision_at_k", 0):.3f}')
-                mc2.metric("Graded NDCG@K", f'{ev.get("graded_ndcg_at_k", 0):.3f}')
-                mc3.metric("Hit Rate@K",    f'{ev.get("hit_rate_at_k", 0):.3f}')
-                mc4.metric("Pair Rank Acc", f'{ev.get("pairwise_rank_acc_at_k", 0):.3f}')
+                mc2.metric("Hit Rate@K",    f'{ev.get("hit_rate_at_k", 0):.3f}')
+                mc3.metric("Pair Rank Acc", f'{ev.get("pairwise_rank_acc_at_k", 0):.3f}')
         except Exception:
             pass
 
@@ -1868,18 +1866,6 @@ def page_evaluation():
                      f"than the same hit at rank {k}. Only verifiable positions (test-set movies) are scored.",
             "good":  "Higher = liked movies ranked first, not buried at the bottom.",
             "range": "0 → 1. Normalised against the ideal ranking for that user.",
-            "fmt":   "0-1",
-        },
-        {
-            "key":   "graded_ndcg_at_k",
-            "label": f"Graded NDCG@{k} (Rating-Weighted)",
-            "icon":  "🌡️",
-            "color": "#c9a227",
-            "what":  f"Like NDCG, but gain is the actual rating (0–5) ÷ 5 instead of binary 0/1. "
-                     f"A rec of a 5★ film scores twice as much as a 2.5★ one at the same rank. "
-                     f"Gives partial credit and is more lenient toward near-liked recommendations.",
-            "good":  "Higher = highly-rated held-out movies appear early in the list.",
-            "range": "0 → 1. Will generally be higher than binary NDCG for the same model.",
             "fmt":   "0-1",
         },
         {
