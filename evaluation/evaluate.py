@@ -288,7 +288,7 @@ def evaluate_temporal_leave_k_out(
 			hits    = len(set(rec_ids).intersection(relevant_test))
 			recommended_catalog_ids.update(rec_ids)
 
-			precision    = hits / len(relevant_test) if relevant_test else 0.0
+			precision    = hits / top_k
 			hit_rate     = 1.0 if hits > 0 else 0.0
 			ndcg         = _ndcg_at_k(rec_ids, relevant_test, top_k, watched_ids=test_set_all)
 			graded_ndcg  = _graded_ndcg_at_k(rec_ids, test_ratings_dict, top_k)
