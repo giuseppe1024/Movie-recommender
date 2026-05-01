@@ -56,8 +56,7 @@ requirements.txt   Python dependencies
 
 ## Setup & Running
 
-**Requires Python 3.10+ &**
-**Requires Streamlit 1.57+**
+**Requires Python 3.10+ & Streamlit 1.57+**
 
 ### Quickest start (data and embeddings already in repo)
 ```bash
